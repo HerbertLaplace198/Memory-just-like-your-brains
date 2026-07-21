@@ -1,0 +1,67 @@
+[
+  {
+    "query": "How can I avoid placing the entire conversation history into the prompt?",
+    "known": true,
+    "expected": ["three stages", "awareness"]
+  },
+  {
+    "query": "If the index database is damaged, where can the authoritative content be recovered?",
+    "known": true,
+    "expected": ["Obsidian", "Markdown"]
+  },
+  {
+    "query": "Can a durable fact summarized by an agent be trusted immediately?",
+    "known": true,
+    "expected": ["confirmation", "Inbox"]
+  },
+  {
+    "query": "How should a long tool response be kept out of the active context?",
+    "known": true,
+    "expected": ["tool output", "offload"]
+  },
+  {
+    "query": "How does the system decide whether it remembers something before retrieval?",
+    "known": true,
+    "expected": ["three stages", "awareness"]
+  },
+  {
+    "query": "Where should I look when a memory summary lacks the required detail?",
+    "known": true,
+    "expected": ["Obsidian", "Markdown"]
+  },
+  {
+    "query": "How should I mix nutrients for an orchid?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "What are the current UK personal income tax rates?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "How do I repair a leaking washing machine?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "Recommend a walking route in London.",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "How many grams of food should a cat eat each day?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "How should I calibrate a monitor's color profile?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "CNKI Chrome DevTools",
+    "known": false,
+    "expected": []
+  }
+]

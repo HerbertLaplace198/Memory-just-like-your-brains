@@ -1,0 +1,26 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Real memory stores and derived indexes may contain private data.
+memory/
+demo-memory/
+backups/
+vault/
+obsidian-view/
+memory.sqlite3
+memory.sqlite3-*
+.write.lock
+encoder.json
+
+# Bundles are private by default. Only named synthetic release samples are allowed.
+*.nmem
+!sample-memory-1.0.1-hash.nmem
+!sample-memory-1.0.1-qwen.nmem
+
+# Local secrets and environment overrides.
+.env
+.env.*
+*.key
+*.pem

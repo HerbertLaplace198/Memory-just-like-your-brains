@@ -1,0 +1,23 @@
+{
+  "dataset": "evaluation.semantic.json",
+  "release": "1.0.1",
+  "cases": 13,
+  "positive_cases": 6,
+  "negative_cases": 7,
+  "results": {
+    "feature-hash-v1-1024": {
+      "gate_threshold": 0.48,
+      "gate_accuracy": 0.6154,
+      "top1_accuracy": 0.5,
+      "top3_recall": 0.5
+    },
+    "qwen3-embedding-0.6b": {
+      "dimensions": 1024,
+      "gate_threshold": 0.55,
+      "gate_accuracy": 1.0,
+      "top1_accuracy": 0.8333,
+      "top3_recall": 1.0
+    }
+  },
+  "warning": "Small synthetic regression set; expand with real queries before generalizing."
+}

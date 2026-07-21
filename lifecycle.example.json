@@ -1,0 +1,22 @@
+{
+  "start": {
+    "command": "python3 /ABSOLUTE/PATH/lifecycle_hook.py start --root /ABSOLUTE/PATH/my-neural-memory",
+    "stdin": {
+      "task": "Current user task text",
+      "event_id": "task-123"
+    }
+  },
+  "finish": {
+    "command": "python3 /ABSOLUTE/PATH/lifecycle_hook.py finish --root /ABSOLUTE/PATH/my-neural-memory",
+    "stdin": {
+      "event_id": "task-123",
+      "memory_candidates": [
+        {
+          "text": "Only include facts, decisions, or preferences that will remain useful in future work.",
+          "topics": ["Project Topic"],
+          "domain": "Project Memory"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "provider": "hash",
+  "dimensions": 256,
+  "gate_threshold": 0.48
+}

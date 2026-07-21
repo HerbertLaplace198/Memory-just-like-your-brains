@@ -1,0 +1,42 @@
+[
+  {
+    "query": "How can I reduce token usage and recover raw tool output from a long task?",
+    "known": true,
+    "expected": ["tool output", "token"]
+  },
+  {
+    "query": "Why does the memory system use several layers?",
+    "known": true,
+    "expected": ["three stages", "sparse activation"]
+  },
+  {
+    "query": "Where should detailed memory content be stored?",
+    "known": true,
+    "expected": ["Obsidian", "Markdown"]
+  },
+  {
+    "query": "Who must confirm important automatically generated memories?",
+    "known": true,
+    "expected": ["user confirmation", "Inbox"]
+  },
+  {
+    "query": "How many cards should one recall return?",
+    "known": true,
+    "expected": ["three to five", "sparse activation"]
+  },
+  {
+    "query": "How long should French onion soup bake?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "Will it rain in London tomorrow?",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "How do I replace a car's transmission fluid?",
+    "known": false,
+    "expected": []
+  }
+]
