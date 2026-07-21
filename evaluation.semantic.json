@@ -1,0 +1,62 @@
+[
+  {
+    "query": "有什么办法避免把全部历史都塞进提示词？",
+    "known": true,
+    "expected": ["三到五张", "稀疏激活"]
+  },
+  {
+    "query": "索引数据库损坏后，知识正文还可以从哪里恢复？",
+    "known": true,
+    "expected": ["Obsidian", "Markdown"]
+  },
+  {
+    "query": "机器自己总结出的长期事实能不能立刻采信？",
+    "known": true,
+    "expected": ["确认", "Inbox"]
+  },
+  {
+    "query": "工具返回的内容太长时，怎样让当前上下文保持轻量？",
+    "known": true,
+    "expected": ["工具输出", "卸载到文件"]
+  },
+  {
+    "query": "系统在真正取回内容以前，如何判断自己是否记得？",
+    "known": true,
+    "expected": ["三层", "有没有相关记忆"]
+  },
+  {
+    "query": "摘要里找不到具体细节时，下一步应该去哪里看？",
+    "known": true,
+    "expected": ["证据指针", "完整原文"]
+  },
+  {
+    "query": "怎样给兰花配置营养液？",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "英国个人所得税税率是多少？",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "如何修理漏水的洗衣机？",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "给我推荐一条伦敦徒步路线。",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "猫咪一天应该吃多少克粮？",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "怎样调节显示器的色彩配置？",
+    "known": false,
+    "expected": []
+  }
+]

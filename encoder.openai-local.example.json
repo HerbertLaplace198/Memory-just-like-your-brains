@@ -1,0 +1,8 @@
+{
+  "provider": "openai-compatible",
+  "endpoint": "http://127.0.0.1:8080/v1/embeddings",
+  "model": "YOUR_LOCAL_EMBEDDING_MODEL",
+  "dimensions": 768,
+  "timeout": 30,
+  "gate_threshold": 0.30
+}

@@ -1,0 +1,8 @@
+{
+  "provider": "ollama",
+  "endpoint": "http://127.0.0.1:11434/api/embed",
+  "model": "qwen3-embedding:0.6b",
+  "dimensions": 1024,
+  "timeout": 60,
+  "gate_threshold": 0.30
+}

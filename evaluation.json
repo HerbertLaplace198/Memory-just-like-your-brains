@@ -1,0 +1,42 @@
+[
+  {
+    "query": "怎样减少 Token 并找回长任务里的原始工具输出？",
+    "known": true,
+    "expected": ["工具输出", "Token"]
+  },
+  {
+    "query": "记忆系统为什么要分成多个层次？",
+    "known": true,
+    "expected": ["三层", "稀疏激活"]
+  },
+  {
+    "query": "详细记忆应该保存在哪里？",
+    "known": true,
+    "expected": ["Obsidian", "Markdown"]
+  },
+  {
+    "query": "重要的自动记忆需要谁确认？",
+    "known": true,
+    "expected": ["用户确认", "Inbox"]
+  },
+  {
+    "query": "召回时一次返回多少张卡片？",
+    "known": true,
+    "expected": ["三到五张", "稀疏激活"]
+  },
+  {
+    "query": "法式洋葱汤应该烤多久？",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "明天伦敦会不会下雨？",
+    "known": false,
+    "expected": []
+  },
+  {
+    "query": "如何更换汽车的变速箱油？",
+    "known": false,
+    "expected": []
+  }
+]
