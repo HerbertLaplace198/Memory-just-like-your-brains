@@ -1,10 +1,10 @@
-# Neural Memory 1.0.1 Acceptance Report
+# Neural Memory 1.0.2 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.0.1 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.0.2 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.0.1 additionally fixes duplicate topics, cross-topic contamination, missing canonical links, L6 graph noise, archive visibility, upper-layer status precedence, stale generated pages, case-only topic filenames, and temporary orphan nodes after automatic proposals.
+Version 1.0.2 adds immediate Obsidian refresh after automatic proposals, a fully linked proposed-memory review queue, and explicit Confirm, Needs revision, and Incorrect/reject actions. It includes all 1.0.1 fixes for duplicate topics, cross-topic contamination, missing canonical links, L6 graph noise, archive visibility, upper-layer status precedence, stale generated pages, and case-only topic filenames.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -45,6 +45,12 @@ These results come from a small synthetic regression set. They do not represent 
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
+
+## 1.0.2 regression scope
+
+- Immediate Obsidian refresh after MCP and lifecycle-hook proposals.
+- Direct maintenance-center links to every proposed memory and evidence file.
+- Unambiguous three-way human review actions with safe multiple-selection rejection.
 
 ## 1.0.1 regression scope
 

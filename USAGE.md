@@ -283,7 +283,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.0.1/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.0.2/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]
@@ -439,6 +439,8 @@ python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian
 ```
 
 Needs revision leaves the memory proposed and adds a maintenance issue. Selecting more than one option changes nothing and returns an error.
+
+For a submit button, install the bundled `obsidian-plugin/neural-memory-review` directory as `.obsidian/plugins/neural-memory-review` inside the memory vault and enable **Neural Memory Review** in Obsidian Community plugins. The plugin adds a button to the maintenance page, a ribbon action, and a command-palette action. It runs the fixed local Python command without a shell only after explicit submission.
 
 ### MCP still uses old behavior
 

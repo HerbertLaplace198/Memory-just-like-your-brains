@@ -16,8 +16,8 @@ encoder.json
 
 # Bundles are private by default. Only named synthetic release samples are allowed.
 *.nmem
-!sample-memory-1.0.1-hash.nmem
-!sample-memory-1.0.1-qwen.nmem
+!sample-memory-1.0.2-hash.nmem
+!sample-memory-1.0.2-qwen.nmem
 
 # Local secrets and environment overrides.
 .env

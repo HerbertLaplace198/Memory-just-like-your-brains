@@ -1908,7 +1908,8 @@ class NeuralMemory:
             "# Memory Maintenance Center\n\n"
             "> This page only lists review candidates. Every write to core memory must be explicitly confirmed from the command line.\n\n"
             "## Proposed memories\n\n" + proposed_memory_lines + "\n\n"
-            "Select exactly one option for each memory, then run `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian`. Confirmation and rejection update the canonical status; needs revision keeps the candidate proposed and adds a maintenance issue.\n\n"
+            "Select exactly one option for each memory, then use the submit button below. Confirmation and rejection update the canonical status; needs revision keeps the candidate proposed and adds a maintenance issue. CLI fallback: `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian`.\n\n"
+            "```neural-memory-submit\nSubmit selected review decisions\n```\n\n"
             "## Human annotation candidates\n\n" + proposal_lines + "\n\n"
             "## System issues\n\n" + issue_lines + "\n\n"
             "## Pending relationships\n\n" + relation_lines + "\n",
@@ -2459,7 +2460,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "sync-obsidian":
             review_sync = memory.sync_obsidian_reviews()
             annotation_sync = memory.sync_obsidian_notes()
-            view = memory.compile_obsidian()
+            review_changes = sum(
+                int(review_sync[key])
+                for key in ("confirmed", "needs_revision", "rejected")
+            )
+            should_compile = review_changes > 0 or int(annotation_sync["created"]) > 0
+            view = memory.compile_obsidian() if should_compile and not review_sync["errors"] else None
             print(json.dumps({
                 "memory_reviews": review_sync,
                 "annotations": annotation_sync,
