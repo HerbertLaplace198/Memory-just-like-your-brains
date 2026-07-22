@@ -430,6 +430,16 @@ Add the paraphrases to the evaluation set, inspect direct semantic scores, and l
 
 Run `compile-obsidian` again. Generated stale topic pages are removed automatically, while valid `USER-NOTES` blocks are preserved.
 
+### Review a proposed memory in Obsidian
+
+Open `99 Maintenance.md`, follow the memory and evidence links, and select exactly one checkbox: **Confirm**, **Needs revision**, or **Incorrect / reject**. Then apply the explicit human decision:
+
+```bash
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian
+```
+
+Needs revision leaves the memory proposed and adds a maintenance issue. Selecting more than one option changes nothing and returns an error.
+
 ### MCP still uses old behavior
 
 Restart the MCP client so it launches the updated server process and reloads the memory root configuration.

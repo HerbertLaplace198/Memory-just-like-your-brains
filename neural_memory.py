@@ -82,6 +82,10 @@ TOPIC_PARENTS = {
 USER_NOTES_RE = re.compile(
     r"<!-- USER-NOTES:START -->(.*?)<!-- USER-NOTES:END -->", re.DOTALL
 )
+MEMORY_REVIEW_RE = re.compile(
+    r"^\s*- \[[xX]\].*?<!-- review:(confirm|revise|reject):(l1_[0-9a-f]+) -->\s*$",
+    re.MULTILINE,
+)
 LOCAL_URL_OPENER = build_opener(ProxyHandler({}))
 
 
@@ -1703,6 +1707,57 @@ class NeuralMemory:
         )]
 
     @serialized_write
+    def sync_obsidian_reviews(self) -> dict[str, object]:
+        """Apply explicit review checkboxes from the generated maintenance page."""
+        maintenance_pages = (
+            self.obsidian_dir / "99 Maintenance.md",
+            self.obsidian_dir / "99 维护中心.md",
+        )
+        page = next((item for item in maintenance_pages if item.is_file()), None)
+        if page is None:
+            return {"confirmed": 0, "needs_revision": 0, "rejected": 0, "errors": []}
+        decisions: dict[str, list[str]] = {}
+        for action, neuron_id in MEMORY_REVIEW_RE.findall(
+            page.read_text(encoding="utf-8")
+        ):
+            decisions.setdefault(neuron_id, []).append(action)
+        result: dict[str, object] = {
+            "confirmed": 0,
+            "needs_revision": 0,
+            "rejected": 0,
+            "errors": [],
+        }
+        errors = result["errors"]
+        assert isinstance(errors, list)
+        for neuron_id, actions in decisions.items():
+            unique_actions = list(dict.fromkeys(actions))
+            if len(unique_actions) != 1:
+                errors.append(f"{neuron_id}: select exactly one review option")
+                continue
+            row = self.db.execute(
+                "SELECT status FROM neurons WHERE id=? AND layer=1", (neuron_id,)
+            ).fetchone()
+            if not row or row["status"] != "proposed":
+                continue
+            action = unique_actions[0]
+            if action == "confirm":
+                self.review(neuron_id, "confirmed")
+                result["confirmed"] = int(result["confirmed"]) + 1
+            elif action == "reject":
+                self.review(neuron_id, "rejected")
+                result["rejected"] = int(result["rejected"]) + 1
+            else:
+                self._issue(
+                    neuron_id,
+                    "needs_revision",
+                    "warning",
+                    "Human reviewer marked this proposed memory as needing revision in Obsidian.",
+                )
+                result["needs_revision"] = int(result["needs_revision"]) + 1
+        self.db.commit()
+        return result
+
+    @serialized_write
     def review_annotation(self, proposal_id: str, decision: str) -> str | None:
         proposal = self.db.execute(
             "SELECT * FROM annotation_proposals WHERE id=? AND status='pending'",
@@ -1737,6 +1792,7 @@ class NeuralMemory:
         """Compile human-readable views that are explicitly excluded from ingestion."""
         topic_dir = self.obsidian_dir / "topics"
         topic_dir.mkdir(parents=True, exist_ok=True)
+        review_sync = self.sync_obsidian_reviews()
         concepts = self.db.execute(
             """SELECT * FROM neurons WHERE layer=3
                AND status NOT IN ('rejected','archived') ORDER BY label"""
@@ -1829,6 +1885,9 @@ class NeuralMemory:
                 if row["evidence_id"]
                 else ""
             )
+            + f"\n  - [ ] Confirm <!-- review:confirm:{row['id']} -->"
+            + f"\n  - [ ] Needs revision <!-- review:revise:{row['id']} -->"
+            + f"\n  - [ ] Incorrect / reject <!-- review:reject:{row['id']} -->"
             for row in proposed_memories
         ) or "- No proposed memories"
         issue_lines = "\n".join(
@@ -1849,7 +1908,7 @@ class NeuralMemory:
             "# Memory Maintenance Center\n\n"
             "> This page only lists review candidates. Every write to core memory must be explicitly confirmed from the command line.\n\n"
             "## Proposed memories\n\n" + proposed_memory_lines + "\n\n"
-            "To review one, run `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory review confirm|reject|stale l1_MEMORY_ID`.\n\n"
+            "Select exactly one option for each memory, then run `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian`. Confirmation and rejection update the canonical status; needs revision keeps the candidate proposed and adds a maintenance issue.\n\n"
             "## Human annotation candidates\n\n" + proposal_lines + "\n\n"
             "## System issues\n\n" + issue_lines + "\n\n"
             "## Pending relationships\n\n" + relation_lines + "\n",
@@ -1904,6 +1963,7 @@ class NeuralMemory:
             "pages": len(generated) + 3,
             "root": str(self.obsidian_dir),
             "annotation_sync": sync_result,
+            "review_sync": review_sync,
             "stale_topic_pages_removed": stale_removed,
         }
 
@@ -2397,7 +2457,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "compile-obsidian":
             print(json.dumps(memory.compile_obsidian(), ensure_ascii=False, indent=2))
         elif args.command == "sync-obsidian":
-            print(json.dumps(memory.sync_obsidian_notes(), ensure_ascii=False, indent=2))
+            review_sync = memory.sync_obsidian_reviews()
+            annotation_sync = memory.sync_obsidian_notes()
+            view = memory.compile_obsidian()
+            print(json.dumps({
+                "memory_reviews": review_sync,
+                "annotations": annotation_sync,
+                "view": view,
+            }, ensure_ascii=False, indent=2))
         elif args.command == "obsidian-review":
             if args.action == "list":
                 print(json.dumps(memory.annotation_proposals(), ensure_ascii=False, indent=2))

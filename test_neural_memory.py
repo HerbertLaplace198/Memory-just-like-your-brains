@@ -285,7 +285,45 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertIn("## Proposed memories", maintenance)
         self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", maintenance)
         self.assertIn("[[vault/evidence/", maintenance)
-        self.assertIn("review confirm|reject|stale", maintenance)
+        self.assertIn(f"review:confirm:{neuron_id}", maintenance)
+        self.assertIn(f"review:revise:{neuron_id}", maintenance)
+        self.assertIn(f"review:reject:{neuron_id}", maintenance)
+
+    def test_obsidian_review_checkboxes_apply_three_human_decisions(self):
+        confirmed_id = self.memory.remember("Confirm this candidate.", "test", topics=["Review"])
+        revise_id = self.memory.remember("Revise this candidate.", "test", topics=["Review"])
+        rejected_id = self.memory.remember("Reject this candidate.", "test", topics=["Review"])
+        self.memory.compile_obsidian()
+        page = self.memory.obsidian_dir / "99 Maintenance.md"
+        text = page.read_text(encoding="utf-8")
+        for action, neuron_id in (
+            ("confirm", confirmed_id),
+            ("revise", revise_id),
+            ("reject", rejected_id),
+        ):
+            text = text.replace(
+                f"- [ ] {'Confirm' if action == 'confirm' else 'Needs revision' if action == 'revise' else 'Incorrect / reject'} <!-- review:{action}:{neuron_id} -->",
+                f"- [x] {'Confirm' if action == 'confirm' else 'Needs revision' if action == 'revise' else 'Incorrect / reject'} <!-- review:{action}:{neuron_id} -->",
+            )
+        page.write_text(text, encoding="utf-8")
+        result = self.memory.sync_obsidian_reviews()
+        self.assertEqual(result["confirmed"], 1)
+        self.assertEqual(result["needs_revision"], 1)
+        self.assertEqual(result["rejected"], 1)
+        statuses = {
+            row["id"]: row["status"]
+            for row in self.memory.db.execute(
+                "SELECT id,status FROM neurons WHERE id IN (?,?,?)",
+                (confirmed_id, revise_id, rejected_id),
+            )
+        }
+        self.assertEqual(statuses[confirmed_id], "confirmed")
+        self.assertEqual(statuses[revise_id], "proposed")
+        self.assertEqual(statuses[rejected_id], "rejected")
+        self.assertTrue(any(
+            issue["neuron_id"] == revise_id and issue["kind"] == "needs_revision"
+            for issue in self.memory.maintenance_inbox()["issues"]
+        ))
 
     def test_continuation_query_adds_parent_topic_without_cross_topic_noise(self):
         thesis = self.memory.remember(

@@ -123,7 +123,7 @@ Topic pages contain a narrative, canonical L1 and evidence links, L4/L5 upper-la
 
 MCP and lifecycle-hook proposals refresh this generated view immediately after a successful write, so a newly created canonical memory and its evidence appear under their topic without a temporary orphan-node window.
 
-`99 Maintenance.md` is the review entry point. Its **Proposed memories** section links directly to every proposed canonical L1 record and its evidence; confirmation and rejection remain explicit CLI actions.
+`99 Maintenance.md` is the review entry point. Its **Proposed memories** section links directly to every proposed canonical L1 record and its evidence. Select exactly one checkbox—**Confirm**, **Needs revision**, or **Incorrect / reject**—then run `sync-obsidian`. A revision request keeps the candidate proposed and creates a maintenance issue; ambiguous multiple selections are rejected without changing memory.
 
 ## MCP integration
 
