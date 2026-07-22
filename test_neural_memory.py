@@ -116,6 +116,58 @@ class NeuralMemoryTests(unittest.TestCase):
             "confirmed",
         )
 
+    def test_reject_moves_l1_and_evidence_to_hidden_archive_and_restores(self):
+        neuron_id = self.memory.remember(
+            "A reversible rejected preference.",
+            "test",
+            topics=["Reversible Review"],
+            procedures=["Review a rejected record before restoration."],
+        )
+        evidence_id = self.memory.db.execute(
+            "SELECT evidence_id FROM neurons WHERE id=?", (neuron_id,)
+        ).fetchone()[0]
+
+        self.assertTrue(self.memory.review(neuron_id, "rejected"))
+        self.assertFalse((self.memory.memory_dir / f"{neuron_id}.md").exists())
+        self.assertFalse((self.memory.evidence_dir / f"{evidence_id}.md").exists())
+        self.assertTrue((self.memory.rejected_dir / f"{neuron_id}.md").exists())
+        self.assertTrue((self.memory.rejected_dir / f"{evidence_id}.md").exists())
+        self.assertIsNone(
+            self.memory.db.execute(
+                "SELECT id FROM neurons WHERE id=?", (neuron_id,)
+            ).fetchone()
+        )
+
+        bundle = Path(self.temp.name).parent / (Path(self.temp.name).name + ".nmem")
+        try:
+            self.memory.export_bundle(bundle)
+            with zipfile.ZipFile(bundle) as archive:
+                self.assertIn(f"vault/.rejected/{neuron_id}.md", archive.namelist())
+                self.assertIn(f"vault/.rejected/{evidence_id}.md", archive.namelist())
+        finally:
+            if bundle.exists():
+                bundle.unlink()
+
+        self.assertTrue(self.memory.restore_rejected(neuron_id))
+        self.assertTrue((self.memory.memory_dir / f"{neuron_id}.md").exists())
+        self.assertTrue((self.memory.evidence_dir / f"{evidence_id}.md").exists())
+        self.assertEqual(
+            self.memory.db.execute(
+                "SELECT status FROM neurons WHERE id=?", (neuron_id,)
+            ).fetchone()[0],
+            "proposed",
+        )
+
+    def test_orphan_evidence_is_archived_and_reported(self):
+        orphan_id = "ev_deadbeef00"
+        orphan = self.memory.evidence_dir / f"{orphan_id}.md"
+        orphan.write_text("---\nid: ev_deadbeef00\n---\n\nOrphaned evidence.\n", encoding="utf-8")
+        self.assertIn(orphan_id, self.memory.health_report()["unreferenced_evidence_ids"])
+        self.assertEqual(self.memory.archive_orphan_evidence(), [orphan_id])
+        self.assertFalse(orphan.exists())
+        self.assertTrue((self.memory.rejected_dir / orphan.name).exists())
+        self.assertEqual(self.memory.health_report()["unreferenced_evidence_ids"], [])
+
     def test_l3_l4_labels_must_be_english(self):
         with self.assertRaisesRegex(ValueError, "topics must use English-only labels"):
             self.memory.remember(
@@ -377,6 +429,9 @@ class NeuralMemoryTests(unittest.TestCase):
         confirmed_id = self.memory.remember("Confirm this candidate.", "test", topics=["Review"])
         revise_id = self.memory.remember("Revise this candidate.", "test", topics=["Review"])
         rejected_id = self.memory.remember("Reject this candidate.", "test", topics=["Review"])
+        rejected_evidence_id = self.memory.db.execute(
+            "SELECT evidence_id FROM neurons WHERE id=?", (rejected_id,)
+        ).fetchone()[0]
         self.memory.compile_obsidian()
         page = self.memory.obsidian_dir / "99 Maintenance.md"
         text = page.read_text(encoding="utf-8")
@@ -403,7 +458,9 @@ class NeuralMemoryTests(unittest.TestCase):
         }
         self.assertEqual(statuses[confirmed_id], "confirmed")
         self.assertEqual(statuses[revise_id], "proposed")
-        self.assertEqual(statuses[rejected_id], "rejected")
+        self.assertNotIn(rejected_id, statuses)
+        self.assertTrue((self.memory.rejected_dir / f"{rejected_id}.md").exists())
+        self.assertTrue((self.memory.rejected_dir / f"{rejected_evidence_id}.md").exists())
         self.assertTrue(any(
             issue["neuron_id"] == revise_id and issue["kind"] == "needs_revision"
             for issue in self.memory.maintenance_inbox()["issues"]
@@ -576,7 +633,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.0.3")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.0.4")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )

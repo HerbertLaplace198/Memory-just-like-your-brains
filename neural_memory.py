@@ -372,12 +372,15 @@ class NeuralMemory:
         self._lock_handle = None
         self.allow_encoder_mismatch = allow_encoder_mismatch
         self.db_path = self.root / "memory.sqlite3"
-        self.evidence_dir = self.root / "vault" / "evidence"
-        self.memory_dir = self.root / "vault" / "memories"
+        self.vault_dir = self.root / "vault"
+        self.evidence_dir = self.vault_dir / "evidence"
+        self.memory_dir = self.vault_dir / "memories"
+        self.rejected_dir = self.vault_dir / ".rejected"
         self.obsidian_dir = self.root / "obsidian-view"
         self.root.mkdir(parents=True, exist_ok=True)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.rejected_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.db_path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
@@ -1497,6 +1500,110 @@ class NeuralMemory:
             )
         return counts
 
+    def _canonical_evidence_ids(self) -> set[str]:
+        """Return evidence IDs still referenced by active canonical L1 records."""
+        evidence_ids: set[str] = set()
+        for path in self.memory_dir.glob("*.md"):
+            metadata, _ = read_record(path)
+            if metadata.get("format") == MEMORY_FORMAT and metadata.get("evidence_id"):
+                evidence_ids.add(str(metadata["evidence_id"]))
+        return evidence_ids
+
+    @serialized_write
+    def archive_orphan_evidence(self) -> list[str]:
+        """Move unreferenced evidence into the hidden, backup-safe rejection archive."""
+        referenced = self._canonical_evidence_ids()
+        moved: list[str] = []
+        for evidence_path in self.evidence_dir.glob("ev_*.md"):
+            if evidence_path.stem in referenced:
+                continue
+            destination = self.rejected_dir / evidence_path.name
+            if destination.exists():
+                raise FileExistsError(f"rejected evidence already exists: {destination}")
+            evidence_path.replace(destination)
+            self.db.execute("DELETE FROM evidence WHERE id=?", (evidence_path.stem,))
+            moved.append(evidence_path.stem)
+        self.db.commit()
+        return moved
+
+    def _archive_rejected_record(self, neuron_id: str) -> None:
+        """Move a rejected L1 and its unshared evidence out of the active vault."""
+        row = self.db.execute(
+            "SELECT evidence_id FROM neurons WHERE id=?", (neuron_id,)
+        ).fetchone()
+        if not row:
+            return
+        canonical = self.memory_dir / f"{neuron_id}.md"
+        evidence_id = str(row["evidence_id"] or "")
+        if not canonical.is_file():
+            self.db.execute("DELETE FROM neurons WHERE id=?", (neuron_id,))
+            return
+
+        metadata, body = read_record(canonical)
+        original_metadata = dict(metadata)
+        evidence_path = self.root / str(metadata.get("evidence_path", ""))
+        evidence_users = self.db.execute(
+            "SELECT count(*) FROM neurons WHERE evidence_id=? AND id!=?",
+            (evidence_id, neuron_id),
+        ).fetchone()[0] if evidence_id else 0
+        move_evidence = bool(evidence_id and evidence_path.is_file() and not evidence_users)
+        rejected_memory = self.rejected_dir / canonical.name
+        rejected_evidence = self.rejected_dir / evidence_path.name
+        if rejected_memory.exists() or (move_evidence and rejected_evidence.exists()):
+            raise FileExistsError(f"rejected archive already contains {neuron_id}")
+
+        metadata["status"] = "rejected"
+        metadata["confidence"] = 0.0
+        metadata["rejected_at"] = now()
+        metadata["rejected_from_status"] = original_metadata.get("status", "proposed")
+        write_record(canonical, metadata, body)
+        moved: list[tuple[Path, Path]] = []
+        try:
+            canonical.replace(rejected_memory)
+            moved.append((canonical, rejected_memory))
+            if move_evidence:
+                evidence_path.replace(rejected_evidence)
+                moved.append((evidence_path, rejected_evidence))
+        except Exception:
+            for source, destination in reversed(moved):
+                if destination.exists():
+                    destination.replace(source)
+            if canonical.exists():
+                write_record(canonical, original_metadata, body)
+            raise
+
+        self.db.execute("DELETE FROM neurons WHERE id=?", (neuron_id,))
+        if move_evidence:
+            self.db.execute("DELETE FROM evidence WHERE id=?", (evidence_id,))
+
+    @serialized_write
+    def restore_rejected(self, neuron_id: str) -> bool:
+        """Restore a rejected L1 as a fresh proposed review candidate."""
+        rejected_memory = self.rejected_dir / f"{neuron_id}.md"
+        if not rejected_memory.is_file() or (self.memory_dir / rejected_memory.name).exists():
+            return False
+        metadata, body = read_record(rejected_memory)
+        if metadata.get("format") != MEMORY_FORMAT:
+            return False
+        evidence_id = str(metadata.get("evidence_id", ""))
+        evidence_path = self.root / str(metadata.get("evidence_path", ""))
+        rejected_evidence = self.rejected_dir / f"{evidence_id}.md"
+        if not evidence_path.is_file() and not rejected_evidence.is_file():
+            raise FileNotFoundError(f"rejected record evidence is missing: {evidence_id}")
+        if not evidence_path.is_file():
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            rejected_evidence.replace(evidence_path)
+        metadata["status"] = "proposed"
+        metadata["confidence"] = 0.68
+        metadata.pop("rejected_at", None)
+        metadata.pop("rejected_from_status", None)
+        restored = self.memory_dir / rejected_memory.name
+        write_record(restored, metadata, body)
+        rejected_memory.unlink()
+        self._index_canonical_record(metadata, body)
+        self.db.commit()
+        return True
+
     @serialized_write
     def review(self, neuron_id: str, status: str) -> bool:
         row = self.db.execute(
@@ -1504,9 +1611,13 @@ class NeuralMemory:
         ).fetchone()
         if not row:
             return False
-        confidence = (
-            0.98 if status == "confirmed" else 0.0 if status == "rejected" else row["confidence"]
-        )
+        if status == "rejected":
+            self._archive_rejected_record(neuron_id)
+            self._prune_orphan_semantic_nodes()
+            self.archive_orphan_evidence()
+            self.db.commit()
+            return True
+        confidence = 0.98 if status == "confirmed" else row["confidence"]
         self.db.execute(
             "UPDATE neurons SET status=?, confidence=? WHERE id=?",
             (status, confidence, neuron_id),
@@ -1517,8 +1628,6 @@ class NeuralMemory:
             metadata["status"] = status
             metadata["confidence"] = confidence
             write_record(canonical, metadata, body)
-        if status == "rejected":
-            self._prune_orphan_semantic_nodes()
         self.db.commit()
         return True
 
@@ -1676,12 +1785,22 @@ class NeuralMemory:
             for row in self.db.execute("SELECT id,path FROM evidence")
             if not (self.root / row["path"]).is_file()
         ]
+        unreferenced_evidence = sorted(
+            path.stem
+            for path in self.evidence_dir.glob("ev_*.md")
+            if path.stem not in self._canonical_evidence_ids()
+        )
         return {
-            "healthy": integrity_rows == ["ok"] and not missing_evidence,
+            "healthy": (
+                integrity_rows == ["ok"]
+                and not missing_evidence
+                and not unreferenced_evidence
+            ),
             "sqlite_integrity": integrity_rows,
             "journal_mode": self.db.execute("PRAGMA journal_mode").fetchone()[0],
             "synchronous": self.db.execute("PRAGMA synchronous").fetchone()[0],
             "missing_evidence_ids": missing_evidence,
+            "unreferenced_evidence_ids": unreferenced_evidence,
             "stats": self.stats(),
         }
 
@@ -2364,6 +2483,9 @@ def parser() -> argparse.ArgumentParser:
     review = commands.add_parser("review")
     review.add_argument("action", choices=["list", "confirm", "reject", "stale", "archive"])
     review.add_argument("neuron_id", nargs="?")
+    restore_rejected = commands.add_parser("restore-rejected")
+    restore_rejected.add_argument("neuron_id")
+    commands.add_parser("archive-orphan-evidence")
     maintenance = commands.add_parser("maintenance")
     maintenance.add_argument(
         "action",
@@ -2504,6 +2626,14 @@ def main(argv: list[str] | None = None) -> int:
                 if status == "rejected":
                     memory.compile_obsidian()
                 print(f"{args.neuron_id}: {status}")
+        elif args.command == "restore-rejected":
+            if not memory.restore_rejected(args.neuron_id):
+                print("rejected record not found or cannot be restored", file=sys.stderr)
+                return 1
+            memory.compile_obsidian()
+            print(f"{args.neuron_id}: restored as proposed")
+        elif args.command == "archive-orphan-evidence":
+            print(json.dumps({"moved": memory.archive_orphan_evidence()}, indent=2))
         elif args.command == "maintenance":
             if args.action == "scan":
                 print(json.dumps(memory.scan_maintenance(), ensure_ascii=False, indent=2))

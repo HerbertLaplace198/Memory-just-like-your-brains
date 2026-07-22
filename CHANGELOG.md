@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4 - 2026-07-22
+
+- Move rejected L1 records and unshared evidence together into hidden, backup-safe `vault/.rejected/` storage instead of leaving active-vault residue.
+- Add recoverable `restore-rejected` and `archive-orphan-evidence` commands.
+- Detect unreferenced evidence in health checks.
+- Expand regression coverage from 38 to 40 tests.
+
 ## 1.0.3 - 2026-07-22
 
 - Prune L3 semantic topics, L4 procedures, and their synapses when rejecting an L1 memory leaves them unreachable from every active L1.

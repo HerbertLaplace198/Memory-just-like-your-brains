@@ -174,6 +174,16 @@ python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory review stale l1_
 python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory review archive l1_MEMORY_ID
 ```
 
+Rejecting a memory moves its canonical L1 record and unshared evidence together into `vault/.rejected/`. That hidden folder is included in backups but excluded from active indexing and the Obsidian graph. Restore it as a fresh proposed candidate, or move any legacy orphan evidence into the same archive:
+
+```bash
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
+  restore-rejected l1_MEMORY_ID
+
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
+  archive-orphan-evidence
+```
+
 Scan maintenance issues and pending relations:
 
 ```bash
@@ -285,7 +295,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.0.3/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.0.4/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]

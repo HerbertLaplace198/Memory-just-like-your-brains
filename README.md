@@ -1,8 +1,14 @@
-# Neural Memory 1.0.3
+# Neural Memory 1.0.4
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.0.4
+
+- Rejecting an L1 now moves its canonical record and unshared evidence together into `vault/.rejected/`, a hidden, backup-safe and recoverable archive.
+- Add `restore-rejected` and `archive-orphan-evidence` commands; health checks now report unreferenced evidence.
+- Regression coverage expands to 40 automated tests.
 
 ## What changed in 1.0.3
 
