@@ -458,6 +458,9 @@ class NeuralMemoryTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(proposed["status"], "proposed")
             self.assertEqual(row["status"], "proposed")
+            self.assertTrue(proposed["obsidian_view_refreshed"])
+            topic_page = server.memory.obsidian_dir / "topics" / "Memory Governance.md"
+            self.assertIn(proposed["id"], topic_page.read_text(encoding="utf-8"))
         finally:
             server.close()
 
@@ -495,6 +498,12 @@ class NeuralMemoryTests(unittest.TestCase):
                 "SELECT status FROM neurons WHERE id=?", (first["created_proposals"][0],)
             ).fetchone()[0]
             self.assertEqual(status, "proposed")
+            self.assertTrue(first["obsidian_view_refreshed"])
+            topic_page = hook.memory.obsidian_dir / "topics" / "Memory Governance.md"
+            self.assertIn(
+                first["created_proposals"][0],
+                topic_page.read_text(encoding="utf-8"),
+            )
         finally:
             hook.close()
 

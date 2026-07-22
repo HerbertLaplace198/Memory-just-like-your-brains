@@ -2,6 +2,7 @@
 
 ## 1.0.1 - 2026-07-22
 
+- Refresh the generated Obsidian view immediately after MCP or lifecycle-hook proposals so new canonical records do not appear as temporary orphan nodes.
 - Canonicalize L3 topic aliases and suppress structural pseudo-topics.
 - Scope recall to the strongest L3 route; continuation queries may include its parent route.
 - Restrict Obsidian topic narratives to direct active L1 members.

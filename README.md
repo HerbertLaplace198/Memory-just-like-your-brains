@@ -121,6 +121,8 @@ obsidian-view/
 
 Topic pages contain a narrative, canonical L1 and evidence links, L4/L5 upper-layer relationships, sources, and a preserved human notes block. L6 is intentionally excluded from the visual graph. Every generated page includes `generated: true` and `do_not_ingest: true`.
 
+MCP and lifecycle-hook proposals refresh this generated view immediately after a successful write, so a newly created canonical memory and its evidence appear under their topic without a temporary orphan-node window.
+
 ## MCP integration
 
 `mcp_server.py` is a dependency-free stdio MCP adapter bound to one memory root at startup:

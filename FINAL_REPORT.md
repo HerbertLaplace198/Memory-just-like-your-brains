@@ -4,7 +4,7 @@
 
 Neural Memory 1.0.1 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.0.1 additionally fixes duplicate topics, cross-topic contamination, missing canonical links, L6 graph noise, archive visibility, upper-layer status precedence, stale generated pages, and case-only topic filenames.
+Version 1.0.1 additionally fixes duplicate topics, cross-topic contamination, missing canonical links, L6 graph noise, archive visibility, upper-layer status precedence, stale generated pages, case-only topic filenames, and temporary orphan nodes after automatic proposals.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 

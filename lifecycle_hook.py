@@ -115,6 +115,7 @@ class LifecycleHook:
             self.memory._set_meta(meta_key, neuron_id)
             self.memory.db.commit()
             created.append(neuron_id)
+        view = self.memory.compile_obsidian() if created else None
         return {
             "event": "finish",
             "event_id": event_id,
@@ -123,6 +124,7 @@ class LifecycleHook:
             "errors": errors,
             "ignored_transcript": "transcript" in payload or "messages" in payload,
             "review_required": bool(created),
+            "obsidian_view_refreshed": bool(view),
         }
 
     def status(self) -> dict[str, Any]:

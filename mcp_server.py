@@ -194,10 +194,13 @@ class MCPServer:
                 domain=arguments.get("domain"),
                 expires_at=arguments.get("expires"),
             )
+            view = self.memory.compile_obsidian()
             return {
                 "id": neuron_id,
                 "status": "proposed",
                 "next": "human review required",
+                "obsidian_view_refreshed": True,
+                "obsidian_pages": view["pages"],
             }
         if name == "memory_inbox":
             return self.memory.maintenance_inbox()
