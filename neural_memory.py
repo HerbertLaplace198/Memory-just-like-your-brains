@@ -1816,6 +1816,21 @@ class NeuralMemory:
             stale_removed += 1
         inbox = self.maintenance_inbox()
         proposals = self.annotation_proposals()
+        proposed_memories = self.db.execute(
+            """SELECT n.*,e.source FROM neurons n
+               LEFT JOIN evidence e ON e.id=n.evidence_id
+               WHERE n.layer=1 AND n.status='proposed'
+               ORDER BY n.created_at,n.id"""
+        ).fetchall()
+        proposed_memory_lines = "\n".join(
+            f"- [[vault/memories/{row['id']}|{row['id']}]] - {compact(row['label'], 100)}"
+            + (
+                f" - [[vault/evidence/{row['evidence_id']}|evidence]]"
+                if row["evidence_id"]
+                else ""
+            )
+            for row in proposed_memories
+        ) or "- No proposed memories"
         issue_lines = "\n".join(
             f"- `{item['id']}` **{item['severity']}** {item['kind']}: {item['details']}"
             for item in inbox["issues"]
@@ -1833,6 +1848,8 @@ class NeuralMemory:
             "---\nview_type: maintenance-dashboard\ngenerated: true\ndo_not_ingest: true\n---\n\n"
             "# Memory Maintenance Center\n\n"
             "> This page only lists review candidates. Every write to core memory must be explicitly confirmed from the command line.\n\n"
+            "## Proposed memories\n\n" + proposed_memory_lines + "\n\n"
+            "To review one, run `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory review confirm|reject|stale l1_MEMORY_ID`.\n\n"
             "## Human annotation candidates\n\n" + proposal_lines + "\n\n"
             "## System issues\n\n" + issue_lines + "\n\n"
             "## Pending relationships\n\n" + relation_lines + "\n",

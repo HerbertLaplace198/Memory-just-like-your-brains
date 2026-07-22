@@ -40,7 +40,7 @@ These results come from a small synthetic regression set. They do not represent 
 
 ## Acceptance record
 
-- 33 automated tests passed after the English-only conversion.
+- 34 automated tests passed after the English-only conversion and review-link regression fix.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.

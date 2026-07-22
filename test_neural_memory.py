@@ -272,6 +272,21 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", archive)
         self.assertIn("[[vault/evidence/", archive)
 
+    def test_maintenance_page_links_proposed_memories_for_review(self):
+        neuron_id = self.memory.remember(
+            "This candidate must remain proposed until a human reviews it.",
+            "test",
+            topics=["Memory Governance"],
+        )
+        self.memory.compile_obsidian()
+        maintenance = (self.memory.obsidian_dir / "99 Maintenance.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("## Proposed memories", maintenance)
+        self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", maintenance)
+        self.assertIn("[[vault/evidence/", maintenance)
+        self.assertIn("review confirm|reject|stale", maintenance)
+
     def test_continuation_query_adds_parent_topic_without_cross_topic_noise(self):
         thesis = self.memory.remember(
             "The thesis entry stores project file pointers.", "test", topics=["thesis"], confirmed=True
