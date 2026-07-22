@@ -1,8 +1,14 @@
-# Neural Memory 1.0.5
+# Neural Memory 1.0.6
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.0.6
+
+- L4 procedure and L5 persona/model relationships now compile into real, clickable Obsidian pages under `relations/`, rather than unresolved WikiLink placeholders.
+- Generated relation pages link back to their related topics, including L5 pages reached through an L4 procedure route.
+- Only active English structural labels generate relation pages; legacy non-English labels cannot create ghost graph nodes. Regression coverage expands to 42 automated tests.
 
 ## What changed in 1.0.5
 
@@ -141,10 +147,13 @@ obsidian-view/
 |-- 00 Home.md
 |-- 98 Archive.md
 |-- 99 Maintenance.md
-`-- topics/*.md
+|-- topics/*.md
+`-- relations/
+    |-- procedures/*.md
+    `-- personas/*.md
 ```
 
-Topic pages contain a narrative, canonical L1 and evidence links, L4/L5 upper-layer relationships, sources, and a preserved human notes block. L6 is intentionally excluded from the visual graph. Every generated page includes `generated: true` and `do_not_ingest: true`.
+Topic pages contain a narrative, canonical L1 and evidence links, links to generated L4/L5 relation pages, sources, and a preserved human notes block. Relation pages link back to their topics. L6 is intentionally excluded from the visual graph. Every generated page includes `generated: true` and `do_not_ingest: true`.
 
 MCP and lifecycle-hook proposals refresh this generated view immediately after a successful write, so a newly created canonical memory and its evidence appear under their topic without a temporary orphan-node window.
 

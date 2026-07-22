@@ -310,6 +310,47 @@ class NeuralMemoryTests(unittest.TestCase):
         self.memory.compile_obsidian()
         self.assertIn("This human annotation must be preserved.", page.read_text(encoding="utf-8"))
 
+    def test_obsidian_compiler_generates_upper_layer_notes(self):
+        self.memory.remember(
+            "Review the evidence before publishing a memory-system release.",
+            "test",
+            topics=["Memory"],
+            procedures=["Review the evidence before publishing."],
+            schemas=["Deliberate maintainer"],
+            confirmed=True,
+        )
+        self.memory.remember(
+            "Legacy labels must not create non-English generated relation pages.",
+            "test",
+            topics=["Memory"],
+            schemas=["旧的模型标签"],
+            confirmed=True,
+        )
+
+        result = self.memory.compile_obsidian()
+        topic = (self.memory.obsidian_dir / "topics" / "Memory System.md").read_text(
+            encoding="utf-8"
+        )
+        procedure = self.memory.obsidian_dir / "relations" / "procedures" / "Review the evidence before publishing.md"
+        persona = self.memory.obsidian_dir / "relations" / "personas" / "Deliberate maintainer.md"
+
+        self.assertGreater(result["pages"], 3)
+        self.assertIn(
+            "[[relations/procedures/Review the evidence before publishing|Review the evidence before publishing.]]",
+            topic,
+        )
+        self.assertIn(
+            "[[relations/personas/Deliberate maintainer|Deliberate maintainer]]",
+            topic,
+        )
+        self.assertTrue(procedure.is_file())
+        self.assertTrue(persona.is_file())
+        self.assertIn("[[topics/Memory System|Memory System]]", procedure.read_text(encoding="utf-8"))
+        self.assertFalse(
+            (self.memory.obsidian_dir / "relations" / "personas" / "旧的模型标签.md").exists()
+        )
+        self.assertNotIn("旧的模型标签", topic)
+
     def test_topic_aliases_are_canonical_and_duplicate_free(self):
         neuron_id = self.memory.remember(
             "Asset allocation follows long-term diversification.",

@@ -1,10 +1,10 @@
-# Neural Memory 1.0.5 Acceptance Report
+# Neural Memory 1.0.6 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.0.5 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.0.6 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.0.5 follows L3 → L2 episode → L1 routes while compiling topic pages, so confirmed episodic memories and their evidence are linked instead of becoming isolated Obsidian nodes. It preserves automatic recompilation after every successful review submission and includes all v1.0.4 rejection-archive improvements.
+Version 1.0.6 compiles active English L4 procedure and L5 persona/model records into real Obsidian relation pages. Topic pages link to those pages, and the relation pages link back to their topics, including L3 → L4 → L5 routes. Legacy non-English structural labels are excluded from the generated graph. It preserves automatic recompilation after every successful review submission and all v1.0.4 rejection-archive improvements.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -40,11 +40,17 @@ These results come from a small synthetic regression set. They do not represent 
 
 ## Acceptance record
 
-- 41 automated tests passed, including automatic recompilation and episode-routed topic linking after review submission.
+- 42 automated tests passed, including generated L4/L5 relation pages, English-only relation output, automatic recompilation, and episode-routed topic linking after review submission.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
+
+## 1.0.6 regression scope
+
+- Generate L4 procedure and L5 persona/model notes as real Obsidian pages.
+- Follow direct L3 → L5 and indirect L3 → L4 → L5 routes when linking relation pages.
+- Exclude legacy non-English structural labels from generated WikiLinks.
 
 ## 1.0.5 regression scope
 

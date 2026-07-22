@@ -264,8 +264,13 @@ obsidian-view/
 |-- 00 Home.md
 |-- 98 Archive.md
 |-- 99 Maintenance.md
-`-- topics/*.md
+|-- topics/*.md
+`-- relations/
+    |-- procedures/*.md
+    `-- personas/*.md
 ```
+
+Every active English L4 procedure and L5 persona/model that is connected to a topic gets a real generated page. Topic pages link to those pages, and each relation page links back to its related topics. Legacy non-English structural labels are not emitted as WikiLinks, so they cannot appear as uncreated graph nodes.
 
 Write human notes only inside the `USER-NOTES` block. Synchronize them into review candidates:
 
@@ -297,7 +302,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.0.5/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.0.6/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]

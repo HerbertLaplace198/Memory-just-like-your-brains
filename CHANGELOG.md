@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6 - 2026-07-22
+
+- Compile active English L4 procedures and L5 persona/model records into real Obsidian relation pages, instead of unresolved WikiLink placeholders.
+- Link every generated relation page back to its L3 topics, following both direct L3 → L5 and L3 → L4 → L5 routes.
+- Exclude legacy non-English structural labels from generated relation links and pages.
+- Expand regression coverage from 41 to 42 tests.
+
 ## 1.0.5 - 2026-07-22
 
 - Follow L3 → L2 episode → L1 routes while compiling topic-page memory links, preventing confirmed episodic memories and evidence from becoming isolated Obsidian nodes.

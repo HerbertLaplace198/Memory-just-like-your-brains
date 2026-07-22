@@ -2003,12 +2003,51 @@ class NeuralMemory:
         """Compile human-readable views that are explicitly excluded from ingestion."""
         topic_dir = self.obsidian_dir / "topics"
         topic_dir.mkdir(parents=True, exist_ok=True)
+        relation_dirs = {
+            4: self.obsidian_dir / "relations" / "procedures",
+            5: self.obsidian_dir / "relations" / "personas",
+        }
+        for directory in relation_dirs.values():
+            directory.mkdir(parents=True, exist_ok=True)
         review_sync = self.sync_obsidian_reviews()
         concepts = self.db.execute(
             """SELECT * FROM neurons WHERE layer=3
                AND status NOT IN ('rejected','archived') ORDER BY label"""
         ).fetchall()
+        relation_nodes: list[sqlite3.Row] = []
+        relation_topics_by_id: dict[str, list[sqlite3.Row]] = {}
+        for row in self.db.execute(
+            """SELECT * FROM neurons WHERE layer IN (4,5)
+               AND status NOT IN ('rejected','archived') ORDER BY layer,label"""
+        ).fetchall():
+            if not is_english_label(row["label"]):
+                continue
+            related_topics = self.db.execute(
+                """WITH RECURSIVE ancestors(id,layer,depth) AS (
+                       SELECT id,layer,0 FROM neurons WHERE id=?
+                       UNION
+                       SELECT n.id,n.layer,a.depth+1
+                       FROM ancestors a
+                       JOIN synapses s ON s.target_id=a.id
+                       JOIN neurons n ON n.id=s.source_id
+                       WHERE n.layer<a.layer AND a.depth<4
+                   )
+                   SELECT DISTINCT n.id,n.label FROM ancestors a
+                   JOIN neurons n ON n.id=a.id
+                   WHERE n.layer=3 AND n.status NOT IN ('rejected','archived')
+                   ORDER BY n.label""",
+                (row["id"],),
+            ).fetchall()
+            if not related_topics:
+                continue
+            relation_nodes.append(row)
+            relation_topics_by_id[row["id"]] = related_topics
+        relation_pages_by_id = {
+            row["id"]: relation_dirs[int(row["layer"])] / f"{safe_filename(row['label'])}.md"
+            for row in relation_nodes
+        }
         generated: list[Path] = []
+        topic_pages_by_id: dict[str, Path] = {}
         for concept in concepts:
             atoms = self._related_atoms(concept["id"])
             desired_name = f"{safe_filename(concept['label'])}.md"
@@ -2022,17 +2061,30 @@ class NeuralMemory:
                 existing.rename(temporary)
                 temporary.rename(page)
                 break
+            topic_pages_by_id[concept["id"]] = page
             notes = self._preserved_user_notes(page)
             memory_ids = [row["id"] for row in atoms]
             sources = list(dict.fromkeys(row["source"] or "unknown" for row in atoms))
             related = self.db.execute(
-                """SELECT n.layer,n.label FROM synapses s JOIN neurons n ON n.id=s.target_id
-                   WHERE s.source_id=? AND n.layer BETWEEN 4 AND 5
+                """WITH RECURSIVE upper(id,layer,depth) AS (
+                       SELECT id,layer,0 FROM neurons WHERE id=?
+                       UNION
+                       SELECT n.id,n.layer,u.depth+1
+                       FROM upper u
+                       JOIN synapses s ON s.source_id=u.id
+                       JOIN neurons n ON n.id=s.target_id
+                       WHERE n.layer>u.layer AND n.layer<=5 AND u.depth<3
+                   )
+                   SELECT DISTINCT n.id,n.layer,n.label FROM upper u
+                   JOIN neurons n ON n.id=u.id
+                   WHERE n.layer BETWEEN 4 AND 5
                    ORDER BY n.layer,n.label""",
                 (concept["id"],),
             ).fetchall()
             related_lines = "\n".join(
-                f"- L{row['layer']} [[{row['label']}]]" for row in related
+                f"- L{row['layer']} [[{relation_pages_by_id[row['id']].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{row['label']}]]"
+                for row in related
+                if row["id"] in relation_pages_by_id
             ) or "- No upper-layer relationships"
             memory_lines = "\n".join(
                 f"- [[vault/memories/{row['id']}|{row['id']}]] - {compact(row['label'], 80)}"
@@ -2070,6 +2122,33 @@ class NeuralMemory:
             )
             generated.append(page)
 
+        relation_generated: list[Path] = []
+        for relation in relation_nodes:
+            page = relation_pages_by_id[relation["id"]]
+            related_topics = relation_topics_by_id[relation["id"]]
+            topic_lines = "\n".join(
+                f"- [[{topic_pages_by_id[row['id']].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{row['label']}]]"
+                for row in related_topics
+                if row["id"] in topic_pages_by_id
+            ) or "- No linked topics"
+            relation_type = "Procedure" if relation["layer"] == 4 else "Persona / stable model"
+            page.write_text(
+                "---\n"
+                "view_type: compiled-relation\n"
+                "generated: true\n"
+                "do_not_ingest: true\n"
+                f"relation_id: {relation['id']}\n"
+                f"layer: {relation['layer']}\n"
+                "---\n\n"
+                f"# {relation['label']}\n\n"
+                "## Relation type\n\n"
+                f"L{relation['layer']} {relation_type}\n\n"
+                "## Related topics\n\n"
+                f"{topic_lines}\n",
+                encoding="utf-8",
+            )
+            relation_generated.append(page)
+
         sync_result = self.sync_obsidian_notes()
         generated_names = {page.name.casefold() for page in generated}
         stale_removed = 0
@@ -2081,6 +2160,17 @@ class NeuralMemory:
                 continue
             page.unlink()
             stale_removed += 1
+        stale_relation_removed = 0
+        relation_generated_paths = {page.resolve() for page in relation_generated}
+        for directory in relation_dirs.values():
+            for page in sorted(directory.glob("*.md")):
+                if page.resolve() in relation_generated_paths:
+                    continue
+                page_text = page.read_text(encoding="utf-8")
+                if "view_type: compiled-relation" not in page_text or "generated: true" not in page_text:
+                    continue
+                page.unlink()
+                stale_relation_removed += 1
         inbox = self.maintenance_inbox()
         proposals = self.annotation_proposals()
         proposed_memories = self.db.execute(
@@ -2172,11 +2262,12 @@ class NeuralMemory:
             encoding="utf-8",
         )
         return {
-            "pages": len(generated) + 3,
+            "pages": len(generated) + len(relation_generated) + 3,
             "root": str(self.obsidian_dir),
             "annotation_sync": sync_result,
             "review_sync": review_sync,
             "stale_topic_pages_removed": stale_removed,
+            "stale_relation_pages_removed": stale_relation_removed,
         }
 
     def evaluate(self, cases_path: Path, limit: int = 3) -> dict[str, object]:
