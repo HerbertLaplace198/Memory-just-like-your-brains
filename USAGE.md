@@ -134,6 +134,8 @@ Layer mapping:
 | `--episode` | L2 | Event or continuing task |
 | `--topic` | L3 | Semantic routing topic |
 | `--procedure` | L4 | Workflow or SOP |
+
+L3 topic and L4 procedure labels are English-only. Non-English labels are rejected before any canonical evidence is written. Rebuilding an older store skips legacy non-English L3/L4 labels. When an L1 memory is rejected, any L3/L4 nodes and synapses that are no longer reachable from another active L1 are pruned automatically.
 | `--schema` | L5 | Stable preference or model |
 | `--domain` | L6 | High-level awareness route |
 

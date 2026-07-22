@@ -56,6 +56,7 @@ CONCEPT_ALIASES = {
     "neural memory": "Memory System",
     "neural-memory": "Memory System",
     "portfolio": "Asset Allocation",
+    "proactive checking": "Proactive Checking",
     "progress": "Thesis Progress",
     "risk-profile": "Investment Risk and Cash Flow",
     "setup": "Setup",
@@ -65,8 +66,10 @@ CONCEPT_ALIASES = {
     "tracker": "Investment Tracker",
     "usd": "US Dollar",
     "user-profile": "User Profile",
+    "user preference": "User Preference",
     "verification": "Institutional Verification",
     "workflow": "Workflow",
+    "writing workflow": "Writing Workflow",
     "writing-guide": "Thesis Writing Guide",
 }
 NON_TOPIC_CONCEPTS = {"index", "status"}
@@ -289,6 +292,32 @@ def canonical_concepts(values: list[str]) -> list[str]:
     if "Thesis Progress" in result and "Free Trade Zone" in result:
         result.remove("Free Trade Zone")
     return result
+
+
+def is_english_label(text: str) -> bool:
+    """Return true for printable ASCII labels containing at least one letter."""
+    return text.isascii() and bool(re.search(r"[A-Za-z]", text))
+
+
+def english_only_labels(values: Iterable[str]) -> list[str]:
+    """Normalize label whitespace and retain only English structural labels."""
+    return list(
+        dict.fromkeys(
+            label
+            for value in values
+            if (label := " ".join(str(value).strip().split())) and is_english_label(label)
+        )
+    )
+
+
+def require_english_labels(values: Iterable[str], field: str) -> list[str]:
+    """Reject new non-English L3/L4 labels instead of silently indexing them."""
+    labels = list(dict.fromkeys(" ".join(str(value).strip().split()) for value in values))
+    labels = [label for label in labels if label]
+    invalid = [label for label in labels if not is_english_label(label)]
+    if invalid:
+        raise ValueError(f"{field} must use English-only labels: {invalid!r}")
+    return labels
 
 
 def write_record(path: Path, metadata: dict[str, object], body: str) -> None:
@@ -713,6 +742,8 @@ class NeuralMemory:
         supersedes: Iterable[str] = (),
         conflicts: Iterable[str] = (),
     ) -> str:
+        concept_labels = require_english_labels(canonical_concepts(list(topics)), "topics")
+        procedure_labels = require_english_labels(procedures, "procedures")
         evidence_id = short_id("ev")
         neuron_id = short_id("l1")
         created_at = now()
@@ -737,10 +768,8 @@ class NeuralMemory:
             "importance": importance,
             "created_at": created_at,
             "episode": episode or "",
-            "concepts": canonical_concepts(topics),
-            "procedures": list(
-                dict.fromkeys(item.strip() for item in procedures if item.strip())
-            ),
+            "concepts": concept_labels,
+            "procedures": procedure_labels,
             "personas": list(dict.fromkeys(item.strip() for item in schemas if item.strip())),
             "domain": (domain or "").strip(),
             "expires_at": (expires_at or "").strip(),
@@ -795,6 +824,9 @@ class NeuralMemory:
                 "Declared as a conflict during ingestion; retain both memories pending human review.",
             )
 
+        if status in {"rejected", "archived"}:
+            return
+
         new_vector = self._encode(text)
         peers = self.db.execute(
             "SELECT * FROM neurons WHERE layer=1 AND id!=? AND status!='rejected'",
@@ -811,13 +843,15 @@ class NeuralMemory:
 
         upper_status = status if status in {"confirmed", "proposed", "archived"} else "proposed"
         current_ids = [neuron_id]
-        concept_labels = [str(x) for x in record.get("concepts", [])]
+        concept_labels = english_only_labels(
+            canonical_concepts([str(x) for x in record.get("concepts", [])])
+        )
         if not concept_labels and any(token in source.casefold() for token in ("skill", "tool")):
             concept_labels = ["Tools"]
         level_specs: list[tuple[int, list[str], str, str]] = [
             (2, [str(record.get("episode", ""))], "episode", "episodic memory"),
             (3, concept_labels, "member_of", "semantic concept"),
-            (4, [str(x) for x in record.get("procedures", [])], "used_in", "procedural memory"),
+            (4, english_only_labels(record.get("procedures", [])), "used_in", "procedural memory"),
             (5, [str(x) for x in record.get("personas", [])], "supports", "stable model"),
             (6, [str(record.get("domain", ""))], "routes_to", "meta-memory domain"),
         ]
@@ -1417,6 +1451,52 @@ class NeuralMemory:
         ) if neuron_ids else None
         self.db.commit()
 
+    def _has_active_l1_descendant(self, neuron_id: str) -> bool:
+        """Check whether a structural node still routes down to an active L1."""
+        row = self.db.execute(
+            "SELECT layer FROM neurons WHERE id=?", (neuron_id,)
+        ).fetchone()
+        if not row:
+            return False
+        return bool(
+            self.db.execute(
+                """WITH RECURSIVE downward(id,layer) AS (
+                       SELECT ?, ?
+                       UNION
+                       SELECT n.id,n.layer
+                       FROM downward d
+                       JOIN synapses s ON s.source_id=d.id
+                       JOIN neurons n ON n.id=s.target_id
+                       WHERE n.layer<d.layer
+                         AND n.status NOT IN ('rejected','archived','stale')
+                   )
+                   SELECT 1 FROM downward WHERE layer=1 LIMIT 1""",
+                (neuron_id, int(row["layer"])),
+            ).fetchone()
+        )
+
+    def _prune_orphan_semantic_nodes(self) -> dict[int, int]:
+        """Delete L3/L4 nodes that no active atomic memory can reach."""
+        orphan_ids: list[str] = []
+        counts = {3: 0, 4: 0}
+        for row in self.db.execute(
+            "SELECT id,layer FROM neurons WHERE layer IN (3,4)"
+        ).fetchall():
+            if self._has_active_l1_descendant(row["id"]):
+                continue
+            orphan_ids.append(row["id"])
+            counts[int(row["layer"])] += 1
+        if orphan_ids:
+            placeholders = ",".join("?" for _ in orphan_ids)
+            self.db.execute(
+                f"DELETE FROM synapses WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+                (*orphan_ids, *orphan_ids),
+            )
+            self.db.execute(
+                f"DELETE FROM neurons WHERE id IN ({placeholders})", orphan_ids
+            )
+        return counts
+
     @serialized_write
     def review(self, neuron_id: str, status: str) -> bool:
         row = self.db.execute(
@@ -1437,6 +1517,8 @@ class NeuralMemory:
             metadata["status"] = status
             metadata["confidence"] = confidence
             write_record(canonical, metadata, body)
+        if status == "rejected":
+            self._prune_orphan_semantic_nodes()
         self.db.commit()
         return True
 
@@ -2419,6 +2501,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not memory.review(args.neuron_id, status):
                     print("neuron not found", file=sys.stderr)
                     return 1
+                if status == "rejected":
+                    memory.compile_obsidian()
                 print(f"{args.neuron_id}: {status}")
         elif args.command == "maintenance":
             if args.action == "scan":

@@ -67,6 +67,90 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertTrue(self.memory.review(neuron_id, "confirmed"))
         self.assertNotIn(neuron_id, {row["id"] for row in self.memory.proposed()})
 
+    def test_reject_prunes_orphan_l3_l4_nodes_and_synapses(self):
+        rejected = self.memory.remember(
+            "A temporary preference.",
+            "test",
+            topics=["Temporary Topic"],
+            procedures=["Use the temporary workflow."],
+        )
+        retained = self.memory.remember(
+            "A retained preference.",
+            "test",
+            topics=["Retained Topic"],
+            procedures=["Use the retained workflow."],
+            confirmed=True,
+        )
+        orphan_ids = {
+            row["id"]
+            for row in self.memory.db.execute(
+                "SELECT id FROM neurons WHERE layer IN (3,4) AND label LIKE 'Temporary%' OR label LIKE 'Use the temporary%'"
+            )
+        }
+        self.assertTrue(orphan_ids)
+
+        self.assertTrue(self.memory.review(rejected, "rejected"))
+
+        for neuron_id in orphan_ids:
+            self.assertIsNone(
+                self.memory.db.execute(
+                    "SELECT id FROM neurons WHERE id=?", (neuron_id,)
+                ).fetchone()
+            )
+            self.assertEqual(
+                self.memory.db.execute(
+                    "SELECT count(*) FROM synapses WHERE source_id=? OR target_id=?",
+                    (neuron_id, neuron_id),
+                ).fetchone()[0],
+                0,
+            )
+        self.assertIsNotNone(
+            self.memory.db.execute(
+                "SELECT id FROM neurons WHERE layer=3 AND label='Retained Topic'"
+            ).fetchone()
+        )
+        self.assertEqual(
+            self.memory.db.execute(
+                "SELECT status FROM neurons WHERE id=?", (retained,)
+            ).fetchone()[0],
+            "confirmed",
+        )
+
+    def test_l3_l4_labels_must_be_english(self):
+        with self.assertRaisesRegex(ValueError, "topics must use English-only labels"):
+            self.memory.remember(
+                "A preference with a non-English topic.",
+                "test",
+                topics=["\u8bba\u6587"],
+            )
+        with self.assertRaisesRegex(ValueError, "procedures must use English-only labels"):
+            self.memory.remember(
+                "A preference with a non-English procedure.",
+                "test",
+                topics=["Thesis"],
+                procedures=["\u4ec5\u6309\u6307\u5b9a\u8303\u56f4\u4fee\u6539"],
+            )
+
+    def test_rebuild_skips_upper_nodes_for_rejected_records(self):
+        neuron_id = self.memory.remember(
+            "A rejected record should not regenerate topics.",
+            "test",
+            topics=["Rejected Topic"],
+            procedures=["Do not regenerate this procedure."],
+        )
+        self.memory.review(neuron_id, "rejected")
+        self.memory.rebuild_index()
+        self.assertIsNone(
+            self.memory.db.execute(
+                "SELECT id FROM neurons WHERE layer=3 AND label='Rejected Topic'"
+            ).fetchone()
+        )
+        self.assertIsNone(
+            self.memory.db.execute(
+                "SELECT id FROM neurons WHERE layer=4 AND label='Do not regenerate this procedure.'"
+            ).fetchone()
+        )
+
     def test_hebbian_reinforcement(self):
         seed_demo(self.memory)
         cards = self.memory.recall("memory system token", 3)
