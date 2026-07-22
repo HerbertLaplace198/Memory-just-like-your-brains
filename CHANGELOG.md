@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.3 - 2026-07-22
+
+- Prune L3 semantic topics, L4 procedures, and their synapses when rejecting an L1 memory leaves them unreachable from every active L1.
+- Do not regenerate upper layers for rejected or archived canonical records during index rebuilds.
+- Require English-only L3 topic and L4 procedure labels for new records; skip legacy non-English structural labels during rebuilds.
+- Expand regression coverage from 35 to 38 tests.
+
 ## 1.0.2 - 2026-07-22
 
 - Refresh the generated Obsidian view immediately after MCP or lifecycle-hook proposals so new canonical records do not appear as temporary orphan nodes.

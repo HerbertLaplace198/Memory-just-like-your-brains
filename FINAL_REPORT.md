@@ -1,10 +1,10 @@
-# Neural Memory 1.0.2 Acceptance Report
+# Neural Memory 1.0.3 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.0.2 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.0.3 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.0.2 adds immediate Obsidian refresh after automatic proposals, a fully linked proposed-memory review queue, and explicit Confirm, Needs revision, and Incorrect/reject actions. It includes all 1.0.1 fixes for duplicate topics, cross-topic contamination, missing canonical links, L6 graph noise, archive visibility, upper-layer status precedence, stale generated pages, and case-only topic filenames.
+Version 1.0.3 automatically prunes orphan L3/L4 nodes after rejecting an L1 memory, prevents rejected or archived records from recreating upper layers during rebuilds, and enforces English-only L3/L4 structural labels. It includes all 1.0.2 review and Obsidian workflow improvements.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -40,11 +40,17 @@ These results come from a small synthetic regression set. They do not represent 
 
 ## Acceptance record
 
-- 35 automated tests passed after the English-only conversion and Obsidian review-action fixes.
+- 38 automated tests passed, including orphan-node pruning, rebuild safety, and English-only structural-label enforcement.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
+
+## 1.0.3 regression scope
+
+- Prune unreachable L3/L4 nodes and synapses after L1 rejection.
+- Keep rejected or archived records from recreating upper nodes during rebuilds.
+- Reject new non-English L3/L4 labels and skip legacy non-English structural labels during rebuilds.
 
 ## 1.0.2 regression scope
 

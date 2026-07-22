@@ -1,8 +1,15 @@
-# Neural Memory 1.0.2
+# Neural Memory 1.0.3
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.0.3
+
+- Rejecting an L1 memory now prunes L3/L4 nodes and synapses that no remaining active L1 can reach.
+- New L3 topic and L4 procedure labels must be English; rebuilds skip legacy non-English structural labels.
+- Rejected and archived canonical records no longer regenerate upper-layer nodes during a rebuild.
+- Regression coverage expands to 38 automated tests.
 
 ## What changed in 1.0.2
 
@@ -14,8 +21,6 @@ For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
 ## What changed in 1.0.1
 
 - L3 topic labels are canonicalized before graph construction, merging aliases, capitalization variants, and duplicates.
-- New L3 topic and L4 procedure labels must be English. Rebuilds skip legacy non-English structural labels.
-- Rejecting an L1 memory prunes L3/L4 nodes and synapses that no remaining active L1 can reach.
 - Recall is scoped to the strongest L3 route. Queries containing `continue` or `resume` may also include a configured parent topic.
 - Obsidian topic pages include only direct active L1 members, preventing graph diffusion from mixing unrelated topics.
 - Topic pages link directly to canonical memory and evidence files. Archived records are listed in `98 Archive.md`.
