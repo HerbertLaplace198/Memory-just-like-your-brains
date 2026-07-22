@@ -1,10 +1,10 @@
-# Neural Memory 1.0.4 Acceptance Report
+# Neural Memory 1.0.5 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.0.4 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.0.5 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.0.4 moves rejected L1 records and their unshared evidence into hidden, backup-safe `vault/.rejected/` storage. It adds recoverable restoration, orphan-evidence migration, and health reporting for unreferenced evidence. It includes all 1.0.3 cleanup and English-only structural-label improvements.
+Version 1.0.5 follows L3 → L2 episode → L1 routes while compiling topic pages, so confirmed episodic memories and their evidence are linked instead of becoming isolated Obsidian nodes. It preserves automatic recompilation after every successful review submission and includes all v1.0.4 rejection-archive improvements.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -40,11 +40,16 @@ These results come from a small synthetic regression set. They do not represent 
 
 ## Acceptance record
 
-- 40 automated tests passed, including rejected-record archiving, recovery, backup inclusion, and orphan-evidence detection.
+- 41 automated tests passed, including automatic recompilation and episode-routed topic linking after review submission.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
+
+## 1.0.5 regression scope
+
+- Link confirmed L1 memories and evidence through L3 → L2 episode → L1 paths.
+- Recompile the Obsidian view after each successful review submission.
 
 ## 1.0.4 regression scope
 

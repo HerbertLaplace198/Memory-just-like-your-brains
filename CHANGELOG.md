@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5 - 2026-07-22
+
+- Follow L3 → L2 episode → L1 routes while compiling topic-page memory links, preventing confirmed episodic memories and evidence from becoming isolated Obsidian nodes.
+- Verify automatic Obsidian recompilation after a successful review submission.
+- Expand regression coverage from 40 to 41 tests.
+
 ## 1.0.4 - 2026-07-22
 
 - Move rejected L1 records and unshared evidence together into hidden, backup-safe `vault/.rejected/` storage instead of leaving active-vault residue.

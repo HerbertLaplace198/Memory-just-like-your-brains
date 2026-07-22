@@ -2,7 +2,9 @@ import tempfile
 import unittest
 import json
 import zipfile
+from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from neural_memory import (
     LocalHTTPEncoder,
     NeuralMemory,
     import_bundle,
+    main,
     seed_demo,
     verify_bundle,
 )
@@ -358,9 +361,13 @@ class NeuralMemoryTests(unittest.TestCase):
             "confirmed",
         )
 
-    def test_topic_page_contains_only_direct_l1_members_and_real_links(self):
+    def test_topic_page_includes_episode_routed_l1_members_and_real_links(self):
         investment = self.memory.remember(
-            "The investment plan uses diversified allocation.", "test", topics=["investment"], confirmed=True
+            "The investment plan uses diversified allocation.",
+            "test",
+            topics=["investment"],
+            confirmed=True,
+            episode="Investment review session",
         )
         thesis = self.memory.remember(
             "Thesis progress has entered result verification.", "test", topics=["thesis"], confirmed=True
@@ -465,6 +472,32 @@ class NeuralMemoryTests(unittest.TestCase):
             issue["neuron_id"] == revise_id and issue["kind"] == "needs_revision"
             for issue in self.memory.maintenance_inbox()["issues"]
         ))
+
+    def test_sync_obsidian_auto_compiles_confirmed_episode_memory(self):
+        neuron_id = self.memory.remember(
+            "Confirm and link this episodic candidate.",
+            "test",
+            topics=["Review"],
+            episode="Review submission event",
+        )
+        self.memory.compile_obsidian()
+        page = self.memory.obsidian_dir / "99 Maintenance.md"
+        page.write_text(
+            page.read_text(encoding="utf-8").replace(
+                f"- [ ] Confirm <!-- review:confirm:{neuron_id} -->",
+                f"- [x] Confirm <!-- review:confirm:{neuron_id} -->",
+            ),
+            encoding="utf-8",
+        )
+
+        with redirect_stdout(StringIO()):
+            self.assertEqual(main(["--root", self.temp.name, "sync-obsidian"]), 0)
+
+        topic = (self.memory.obsidian_dir / "topics" / "Review.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", topic)
+        self.assertIn("[[vault/evidence/", topic)
 
     def test_continuation_query_adds_parent_topic_without_cross_topic_noise(self):
         thesis = self.memory.remember(
@@ -633,7 +666,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.0.4")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.0.5")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )

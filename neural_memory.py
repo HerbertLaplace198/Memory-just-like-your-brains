@@ -1824,15 +1824,25 @@ class NeuralMemory:
         return {"records": len(records), "stats": self.stats()}
 
     def _related_atoms(self, neuron_id: str, max_depth: int = 5) -> list[sqlite3.Row]:
-        """Return only active L1 memories directly assigned to this topic."""
+        """Return active L1 memories reached directly or through their L2 episode."""
         return self.db.execute(
-            """SELECT n.*,e.source FROM synapses s
-               JOIN neurons n ON n.id=s.target_id
+            """WITH RECURSIVE descendants(id,layer,depth) AS (
+                   SELECT id,layer,0 FROM neurons WHERE id=?
+                   UNION
+                   SELECT n.id,n.layer,d.depth+1
+                   FROM descendants d
+                   JOIN synapses s ON s.source_id=d.id
+                   JOIN neurons n ON n.id=s.target_id
+                   WHERE n.layer<d.layer
+                     AND d.depth<?
+                     AND s.relation IN ('member_of','episode')
+               )
+               SELECT DISTINCT n.*,e.source FROM descendants d
+               JOIN neurons n ON n.id=d.id
                LEFT JOIN evidence e ON e.id=n.evidence_id
-               WHERE s.source_id=? AND s.relation='member_of'
-                 AND n.layer=1 AND n.status NOT IN ('rejected','archived')
+               WHERE n.layer=1 AND n.status NOT IN ('rejected','archived')
                ORDER BY n.created_at""",
-            (neuron_id,),
+            (neuron_id, max_depth),
         ).fetchall()
 
     @staticmethod

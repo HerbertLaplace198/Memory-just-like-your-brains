@@ -1,8 +1,13 @@
-# Neural Memory 1.0.4
+# Neural Memory 1.0.5
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.0.5
+
+- Topic compilation now follows `L3 → L2 episode → L1` routes, so confirmed episodic memories and their evidence receive topic-page links instead of appearing as isolated Obsidian nodes.
+- Every successful review submission automatically recompiles the Obsidian view; regression coverage expands to 41 automated tests.
 
 ## What changed in 1.0.4
 

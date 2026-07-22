@@ -1,6 +1,6 @@
 {
   "dataset": "evaluation.semantic.json",
-  "release": "1.0.4",
+  "release": "1.0.5",
   "cases": 13,
   "positive_cases": 6,
   "negative_cases": 7,

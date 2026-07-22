@@ -184,6 +184,8 @@ python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
   archive-orphan-evidence
 ```
 
+Submitting any valid review decision through `sync-obsidian` automatically recompiles the Obsidian view. Confirmed memories that include an episode are linked through their topic pages together with their evidence, so they do not appear as isolated graph nodes.
+
 Scan maintenance issues and pending relations:
 
 ```bash
@@ -295,7 +297,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.0.4/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.0.5/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]
