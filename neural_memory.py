@@ -27,7 +27,7 @@ import time
 import uuid
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Protocol
 from urllib.parse import urlparse
@@ -37,6 +37,9 @@ from urllib.request import ProxyHandler, Request, build_opener
 VECTOR_DIMS = 1024
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
+SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
+CONCEPT_IDENTITY_FORMAT = "neural-memory-concept-identity/v1"
+CONCEPT_DECISION_FORMAT = "neural-memory-concept-decision/v1"
 CONCEPT_ALIASES = {
     "asset allocation": "Asset Allocation",
     "btc": "Bitcoin",
@@ -89,6 +92,15 @@ MEMORY_REVIEW_RE = re.compile(
     r"^\s*- \[[xX]\].*?<!-- review:(confirm|revise|reject):(l1_[0-9a-f]+) -->\s*$",
     re.MULTILINE,
 )
+CONCEPT_REVIEW_RE = re.compile(
+    r"^\s*- \[[xX]\].*?<!-- concept-review:(confirm|reject):(l3_[0-9a-f]+) -->\s*$",
+    re.MULTILINE,
+)
+CONCEPT_DUPLICATE_REVIEW_RE = re.compile(
+    r"^\s*- \[[xX]\].*?<!-- concept-duplicate-review:"
+    r"(merge-left|merge-right|distinct):(dup_[0-9a-f]+) -->\s*$",
+    re.MULTILINE,
+)
 LOCAL_URL_OPENER = build_opener(ProxyHandler({}))
 
 
@@ -105,6 +117,28 @@ def serialized_write(method):
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    """Parse an ISO timestamp defensively for biological decay calculations."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def elapsed_days(value: str | None, reference: datetime | None = None) -> float:
+    """Return non-negative elapsed days without making malformed dates fatal."""
+    parsed = parse_timestamp(value)
+    if not parsed:
+        return 0.0
+    reference = reference or datetime.now(timezone.utc)
+    return max(0.0, (reference - parsed).total_seconds() / 86400.0)
 
 
 def short_id(prefix: str) -> str:
@@ -277,6 +311,11 @@ def canonical_concept(text: str) -> str:
     return CONCEPT_ALIASES.get(label.casefold(), label)
 
 
+def normalized_concept_key(label: str) -> str:
+    normalized = canonical_concept(label).casefold()
+    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+
+
 def canonical_concepts(values: list[str]) -> list[str]:
     """Normalize L3 labels and discard structural tags that are not topics."""
     result: list[str] = []
@@ -356,6 +395,8 @@ class ActivatedNeuron:
     lexical_score: float = 0.0
     direct_activation: float = 0.0
     spread_activation: float = 0.0
+    stability: float = 0.5
+    retention: float = 1.0
 
 
 class NeuralMemory:
@@ -375,11 +416,17 @@ class NeuralMemory:
         self.vault_dir = self.root / "vault"
         self.evidence_dir = self.vault_dir / "evidence"
         self.memory_dir = self.vault_dir / "memories"
+        self.semantic_review_dir = self.vault_dir / "semantic-reviews"
+        self.concept_identity_dir = self.vault_dir / "concept-identities"
+        self.concept_decision_dir = self.vault_dir / "concept-decisions"
         self.rejected_dir = self.vault_dir / ".rejected"
         self.obsidian_dir = self.root / "obsidian-view"
         self.root.mkdir(parents=True, exist_ok=True)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.semantic_review_dir.mkdir(parents=True, exist_ok=True)
+        self.concept_identity_dir.mkdir(parents=True, exist_ok=True)
+        self.concept_decision_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.db_path)
         self.db.row_factory = sqlite3.Row
@@ -488,7 +535,10 @@ class NeuralMemory:
                 evidence_id TEXT REFERENCES evidence(id),
                 created_at TEXT NOT NULL,
                 last_used TEXT,
-                expires_at TEXT
+                expires_at TEXT,
+                stability REAL NOT NULL DEFAULT 0.5,
+                reactivation_count INTEGER NOT NULL DEFAULT 0,
+                last_reactivated TEXT
             );
             CREATE TABLE IF NOT EXISTS synapses (
                 source_id TEXT NOT NULL REFERENCES neurons(id) ON DELETE CASCADE,
@@ -496,6 +546,7 @@ class NeuralMemory:
                 relation TEXT NOT NULL,
                 weight REAL NOT NULL,
                 last_fired TEXT,
+                fire_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(source_id, target_id, relation)
             );
             CREATE INDEX IF NOT EXISTS idx_neurons_layer ON neurons(layer);
@@ -540,11 +591,71 @@ class NeuralMemory:
                 UNIQUE(page_path, notes_hash)
             );
             CREATE INDEX IF NOT EXISTS idx_annotation_status ON annotation_proposals(status);
+            CREATE TABLE IF NOT EXISTS semantic_reviews (
+                concept_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK(status IN ('confirmed','rejected')),
+                member_ids TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS concept_identities (
+                concept_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL CHECK(status IN ('proposed','confirmed','rejected','merged')),
+                member_ids TEXT NOT NULL,
+                merged_into_key TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS concept_duplicate_reviews (
+                id TEXT PRIMARY KEY,
+                left_key TEXT NOT NULL,
+                right_key TEXT NOT NULL,
+                left_label TEXT NOT NULL,
+                right_label TEXT NOT NULL,
+                vector_score REAL NOT NULL,
+                member_overlap REAL NOT NULL,
+                label_score REAL NOT NULL,
+                combined_score REAL NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending','merged','distinct')),
+                survivor_key TEXT,
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                UNIQUE(left_key,right_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_concept_duplicates_status
+                ON concept_duplicate_reviews(status);
+            CREATE TABLE IF NOT EXISTS concept_aliases (
+                alias_key TEXT PRIMARY KEY,
+                alias_label TEXT NOT NULL,
+                canonical_key TEXT NOT NULL,
+                canonical_label TEXT NOT NULL,
+                decision_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """
         )
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(neurons)")}
         if "expires_at" not in columns:
             self.db.execute("ALTER TABLE neurons ADD COLUMN expires_at TEXT")
+        if "stability" not in columns:
+            self.db.execute(
+                "ALTER TABLE neurons ADD COLUMN stability REAL NOT NULL DEFAULT 0.5"
+            )
+        if "reactivation_count" not in columns:
+            self.db.execute(
+                "ALTER TABLE neurons ADD COLUMN reactivation_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "last_reactivated" not in columns:
+            self.db.execute("ALTER TABLE neurons ADD COLUMN last_reactivated TEXT")
+        synapse_columns = {
+            row[1] for row in self.db.execute("PRAGMA table_info(synapses)")
+        }
+        if "fire_count" not in synapse_columns:
+            self.db.execute(
+                "ALTER TABLE synapses ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0"
+            )
+        self._load_semantic_reviews()
+        self._load_concept_identities()
+        self._load_concept_decisions()
         self.db.commit()
 
     def _vector(self, row: sqlite3.Row) -> list[float]:
@@ -645,7 +756,170 @@ class NeuralMemory:
         row = self.db.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
         return row["value"] if row else None
 
+    def _load_semantic_reviews(self) -> int:
+        """Rebuild semantic review decisions from canonical Markdown files."""
+        loaded = 0
+        for path in sorted(self.semantic_review_dir.glob("*.md")):
+            metadata, _ = read_record(path)
+            if metadata.get("format") != SEMANTIC_REVIEW_FORMAT:
+                continue
+            concept_id = str(metadata.get("concept_id", ""))
+            status = str(metadata.get("status", ""))
+            member_ids = metadata.get("member_ids", [])
+            reviewed_at = str(metadata.get("reviewed_at", ""))
+            if not concept_id or status not in {"confirmed", "rejected"}:
+                continue
+            self.db.execute(
+                """INSERT INTO semantic_reviews(concept_id,status,member_ids,reviewed_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(concept_id) DO UPDATE SET
+                     status=excluded.status,
+                     member_ids=excluded.member_ids,
+                     reviewed_at=excluded.reviewed_at""",
+                (
+                    concept_id,
+                    status,
+                    json.dumps(member_ids, ensure_ascii=False),
+                    reviewed_at or now(),
+                ),
+            )
+            loaded += 1
+        return loaded
+
+    def _load_concept_identities(self) -> int:
+        loaded = 0
+        for path in sorted(self.concept_identity_dir.glob("*.md")):
+            metadata, _ = read_record(path)
+            if metadata.get("format") != CONCEPT_IDENTITY_FORMAT:
+                continue
+            concept_id = str(metadata.get("concept_id", ""))
+            status = str(metadata.get("status", "proposed"))
+            if not concept_id or status not in {
+                "proposed",
+                "confirmed",
+                "rejected",
+                "merged",
+            }:
+                continue
+            member_ids = sorted(
+                str(item) for item in metadata.get("member_ids", []) if str(item)
+            )
+            created_at = str(metadata.get("created_at", "")) or now()
+            updated_at = str(metadata.get("updated_at", "")) or created_at
+            self.db.execute(
+                """INSERT INTO concept_identities
+                   (concept_id,status,member_ids,merged_into_key,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(concept_id) DO UPDATE SET
+                     status=excluded.status,
+                     member_ids=excluded.member_ids,
+                     merged_into_key=excluded.merged_into_key,
+                     created_at=excluded.created_at,
+                     updated_at=excluded.updated_at""",
+                (
+                    concept_id,
+                    status,
+                    json.dumps(member_ids, ensure_ascii=False),
+                    str(metadata.get("merged_into_key", "")) or None,
+                    created_at,
+                    updated_at,
+                ),
+            )
+            loaded += 1
+        return loaded
+
+    def _load_concept_decisions(self) -> int:
+        loaded = 0
+        for path in sorted(self.concept_decision_dir.glob("*.md")):
+            metadata, _ = read_record(path)
+            if metadata.get("format") != CONCEPT_DECISION_FORMAT:
+                continue
+            decision_id = str(metadata.get("id", ""))
+            status = str(metadata.get("status", ""))
+            left_key = str(metadata.get("left_key", ""))
+            right_key = str(metadata.get("right_key", ""))
+            if (
+                not decision_id
+                or status not in {"merged", "distinct"}
+                or not left_key
+                or not right_key
+            ):
+                continue
+            left_key, right_key = sorted((left_key, right_key))
+            self.db.execute(
+                """INSERT INTO concept_duplicate_reviews
+                   (id,left_key,right_key,left_label,right_label,vector_score,
+                    member_overlap,label_score,combined_score,status,survivor_key,
+                    created_at,reviewed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(left_key,right_key) DO UPDATE SET
+                     id=excluded.id,
+                     left_label=excluded.left_label,
+                     right_label=excluded.right_label,
+                     status=excluded.status,
+                     survivor_key=excluded.survivor_key,
+                     reviewed_at=excluded.reviewed_at""",
+                (
+                    decision_id,
+                    left_key,
+                    right_key,
+                    str(metadata.get("left_label", left_key)),
+                    str(metadata.get("right_label", right_key)),
+                    float(metadata.get("vector_score", 0.0)),
+                    float(metadata.get("member_overlap", 0.0)),
+                    float(metadata.get("label_score", 0.0)),
+                    float(metadata.get("combined_score", 0.0)),
+                    status,
+                    str(metadata.get("survivor_key", "")) or None,
+                    str(metadata.get("created_at", "")) or now(),
+                    str(metadata.get("reviewed_at", "")) or now(),
+                ),
+            )
+            if status == "merged":
+                survivor_key = str(metadata.get("survivor_key", ""))
+                survivor_label = str(metadata.get("survivor_label", ""))
+                loser_label = str(metadata.get("loser_label", ""))
+                if survivor_key and survivor_label and loser_label:
+                    self.db.execute(
+                        """INSERT INTO concept_aliases
+                           (alias_key,alias_label,canonical_key,canonical_label,
+                            decision_id,created_at)
+                           VALUES(?,?,?,?,?,?)
+                           ON CONFLICT(alias_key) DO UPDATE SET
+                             alias_label=excluded.alias_label,
+                             canonical_key=excluded.canonical_key,
+                             canonical_label=excluded.canonical_label,
+                             decision_id=excluded.decision_id""",
+                        (
+                            normalized_concept_key(loser_label),
+                            loser_label,
+                            survivor_key,
+                            survivor_label,
+                            decision_id,
+                            str(metadata.get("reviewed_at", "")) or now(),
+                        ),
+                    )
+            loaded += 1
+        return loaded
+
+    def _resolve_concept_alias(self, label: str) -> str:
+        canonical = canonical_concept(label)
+        row = self.db.execute(
+            "SELECT canonical_label FROM concept_aliases WHERE alias_key=?",
+            (normalized_concept_key(canonical),),
+        ).fetchone()
+        return row["canonical_label"] if row else canonical
+
+    @staticmethod
+    def _stable_named_concept_id(label: str) -> str:
+        digest = hashlib.sha256(
+            f"named-concept|{normalized_concept_key(label)}".encode("utf-8")
+        ).hexdigest()[:10]
+        return f"l3_{digest}"
+
     def _find_named(self, layer: int, label: str) -> sqlite3.Row | None:
+        if layer == 3:
+            label = self._resolve_concept_alias(label)
         return self.db.execute(
             "SELECT * FROM neurons WHERE layer=? AND lower(label)=lower(?) AND status!='rejected'",
             (layer, label),
@@ -662,14 +936,16 @@ class NeuralMemory:
         evidence_id: str | None = None,
         neuron_id: str | None = None,
         expires_at: str | None = None,
+        stability: float = 0.5,
+        created_at: str | None = None,
     ) -> str:
         neuron_id = neuron_id or short_id(f"l{layer}")
         representation = self._encode(label + " " + summary)
         self.db.execute(
             """INSERT INTO neurons
                (id, layer, label, summary, vector, status, confidence, importance,
-                evidence_id, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                evidence_id, created_at, expires_at, stability)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 neuron_id,
                 layer,
@@ -680,8 +956,9 @@ class NeuralMemory:
                 confidence,
                 importance,
                 evidence_id,
-                now(),
+                created_at or now(),
                 expires_at,
+                max(0.0, min(1.0, stability)),
             ),
         )
         return neuron_id
@@ -729,6 +1006,785 @@ class NeuralMemory:
                 (source, target, relation, weight),
             )
 
+    def _l3_routes_for_l1(self, neuron_id: str) -> set[str]:
+        """Return semantic concepts reachable upward from one atomic trace."""
+        return {
+            row["id"]
+            for row in self.db.execute(
+                """WITH RECURSIVE upward(id,layer) AS (
+                       SELECT id,layer FROM neurons WHERE id=?
+                       UNION
+                       SELECT n.id,n.layer
+                       FROM upward u
+                       JOIN synapses s ON s.source_id=u.id
+                       JOIN neurons n ON n.id=s.target_id
+                       WHERE n.layer>u.layer
+                         AND n.status NOT IN ('rejected','archived','stale')
+                   )
+                   SELECT id FROM upward WHERE layer=3""",
+                (neuron_id,),
+            ).fetchall()
+        }
+
+    @staticmethod
+    def _concept_key(row: sqlite3.Row) -> str:
+        if str(row["label"]).startswith("Emergent Concept "):
+            return f"emergent:{row['id']}"
+        return f"label:{normalized_concept_key(str(row['label']))}"
+
+    def _find_concept_by_key(self, concept_key: str) -> sqlite3.Row | None:
+        if concept_key.startswith("emergent:"):
+            return self.db.execute(
+                """SELECT * FROM neurons
+                   WHERE id=? AND layer=3
+                     AND status NOT IN ('rejected','archived')""",
+                (concept_key.split(":", 1)[1],),
+            ).fetchone()
+        if concept_key.startswith("label:"):
+            normalized = concept_key.split(":", 1)[1]
+            return next(
+                (
+                    row
+                    for row in self.db.execute(
+                        """SELECT * FROM neurons
+                           WHERE layer=3
+                             AND status NOT IN ('rejected','archived')"""
+                    )
+                    if normalized_concept_key(str(row["label"])) == normalized
+                ),
+                None,
+            )
+        return None
+
+    def _persist_concept_identity(
+        self,
+        concept_id: str,
+        member_ids: list[str],
+        status: str,
+        merged_into_key: str | None = None,
+    ) -> None:
+        existing = self.db.execute(
+            "SELECT created_at FROM concept_identities WHERE concept_id=?",
+            (concept_id,),
+        ).fetchone()
+        created_at = existing["created_at"] if existing else now()
+        updated_at = now()
+        member_ids = sorted(set(member_ids))
+        write_record(
+            self.concept_identity_dir / f"{concept_id}.md",
+            {
+                "format": CONCEPT_IDENTITY_FORMAT,
+                "concept_id": concept_id,
+                "status": status,
+                "member_ids": member_ids,
+                "merged_into_key": merged_into_key or "",
+                "created_at": created_at,
+                "updated_at": updated_at,
+            },
+            (
+                f"Stable identity for emergent concept {concept_id}. "
+                f"Current support: {len(member_ids)} atomic memory traces."
+            ),
+        )
+        self.db.execute(
+            """INSERT INTO concept_identities
+               (concept_id,status,member_ids,merged_into_key,created_at,updated_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(concept_id) DO UPDATE SET
+                 status=excluded.status,
+                 member_ids=excluded.member_ids,
+                 merged_into_key=excluded.merged_into_key,
+                 updated_at=excluded.updated_at""",
+            (
+                concept_id,
+                status,
+                json.dumps(member_ids, ensure_ascii=False),
+                merged_into_key,
+                created_at,
+                updated_at,
+            ),
+        )
+
+    def _remove_emergent_concepts(self) -> int:
+        """Remove rebuildable L3 abstractions before recomputing them."""
+        rows = self.db.execute(
+            """SELECT DISTINCT n.id
+               FROM neurons n JOIN synapses s
+                 ON (s.source_id=n.id OR s.target_id=n.id)
+               WHERE n.layer=3 AND s.relation='emergent_member_of'"""
+        ).fetchall()
+        concept_ids = [row["id"] for row in rows]
+        if not concept_ids:
+            return 0
+        placeholders = ",".join("?" for _ in concept_ids)
+        self.db.execute(
+            f"DELETE FROM synapses WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+            (*concept_ids, *concept_ids),
+        )
+        self.db.execute(
+            f"DELETE FROM neurons WHERE id IN ({placeholders})", concept_ids
+        )
+        return len(concept_ids)
+
+    def _rebuild_emergent_concepts(
+        self,
+        min_support: int = 3,
+        similarity_threshold: float | None = None,
+    ) -> int:
+        """Form proposed L3 concepts from repeated, similar confirmed L1 traces."""
+        identities = self.db.execute(
+            "SELECT * FROM concept_identities ORDER BY created_at,concept_id"
+        ).fetchall()
+        self._remove_emergent_concepts()
+        atoms = self.db.execute(
+            """SELECT * FROM neurons
+               WHERE layer=1 AND status='confirmed'
+               ORDER BY created_at,id"""
+        ).fetchall()
+        if len(atoms) < min_support:
+            return 0
+
+        rows_by_id = {row["id"]: row for row in atoms}
+        threshold = (
+            similarity_threshold
+            if similarity_threshold is not None
+            else (0.34 if isinstance(self.encoder, HashEncoder) else 0.75)
+        )
+        clusters: list[list[str]] = []
+        for atom in atoms:
+            choices: list[tuple[float, int]] = []
+            for index, cluster in enumerate(clusters):
+                similarities = [
+                    max(
+                        0.0,
+                        cosine(
+                            self._vector(atom),
+                            self._vector(rows_by_id[member_id]),
+                        ),
+                    )
+                    for member_id in cluster
+                ]
+                if similarities and min(similarities) >= threshold:
+                    choices.append((sum(similarities) / len(similarities), index))
+            if choices:
+                _, best_index = max(choices)
+                clusters[best_index].append(atom["id"])
+            else:
+                clusters.append([atom["id"]])
+        components = [
+            sorted(cluster) for cluster in clusters if len(cluster) >= min_support
+        ]
+
+        created = 0
+        used_identity_ids: set[str] = set()
+        for member_ids in components:
+            shared_routes: set[str] | None = None
+            for member_id in member_ids:
+                routes = self._l3_routes_for_l1(member_id)
+                shared_routes = routes if shared_routes is None else shared_routes & routes
+            if shared_routes:
+                continue
+
+            member_set = set(member_ids)
+            identity_choices: list[tuple[float, sqlite3.Row]] = []
+            for candidate in identities:
+                if candidate["concept_id"] in used_identity_ids:
+                    continue
+                old_members = set(json.loads(candidate["member_ids"]))
+                overlap = len(member_set & old_members) / max(
+                    1, len(member_set | old_members)
+                )
+                if overlap >= 0.60:
+                    identity_choices.append((overlap, candidate))
+            identity = (
+                max(identity_choices, key=lambda item: item[0])[1]
+                if identity_choices
+                else None
+            )
+            if identity:
+                concept_id = str(identity["concept_id"])
+            else:
+                digest = hashlib.sha256(
+                    "|".join(member_ids).encode("utf-8")
+                ).hexdigest()[:10]
+                concept_id = f"l3_{digest}"
+            used_identity_ids.add(concept_id)
+            digest = concept_id.split("_", 1)[1]
+            summaries = [rows_by_id[item]["summary"].strip() for item in member_ids]
+            summary = (
+                f"Emergent semantic concept supported by {len(member_ids)} confirmed "
+                f"memory traces: {compact(' | '.join(summaries), 420)}"
+            )
+            confidence = min(0.88, 0.52 + 0.08 * len(member_ids))
+            importance = sum(
+                float(rows_by_id[item]["importance"]) for item in member_ids
+            ) / len(member_ids)
+            stability = min(0.95, 1.0 - math.exp(-len(member_ids) / 3.0))
+            reviewed = self.db.execute(
+                "SELECT status FROM semantic_reviews WHERE concept_id=?",
+                (concept_id,),
+            ).fetchone()
+            identity_status = str(identity["status"]) if identity else "proposed"
+            merged_into_key = (
+                str(identity["merged_into_key"])
+                if identity and identity["merged_into_key"]
+                else None
+            )
+            if identity_status == "merged" and merged_into_key:
+                survivor = self._find_concept_by_key(merged_into_key)
+                if survivor:
+                    for member_id in member_ids:
+                        self._connect(
+                            member_id,
+                            survivor["id"],
+                            "emergent_member_of",
+                            min(0.92, 0.62 + 0.06 * len(member_ids)),
+                        )
+                self._persist_concept_identity(
+                    concept_id,
+                    member_ids,
+                    "merged",
+                    merged_into_key,
+                )
+                continue
+            if (reviewed and reviewed["status"] == "rejected") or identity_status == "rejected":
+                self._persist_concept_identity(
+                    concept_id,
+                    member_ids,
+                    "rejected",
+                )
+                continue
+            status = (
+                "confirmed"
+                if (reviewed and reviewed["status"] == "confirmed")
+                or identity_status == "confirmed"
+                else "proposed"
+            )
+            self._create_neuron(
+                3,
+                f"Emergent Concept {digest}",
+                summary,
+                status,
+                0.95 if status == "confirmed" else confidence,
+                importance,
+                neuron_id=concept_id,
+                stability=stability,
+            )
+            for member_id in member_ids:
+                self._connect(
+                    member_id,
+                    concept_id,
+                    "emergent_member_of",
+                    min(0.92, 0.62 + 0.06 * len(member_ids)),
+                )
+            created += 1
+            self._persist_concept_identity(
+                concept_id,
+                member_ids,
+                status,
+            )
+        return created
+
+    def _refresh_semantic_stability(self) -> None:
+        """Derive L3 stability from the amount and diversity of active experience."""
+        concepts = self.db.execute(
+            """SELECT id FROM neurons
+               WHERE layer=3 AND status NOT IN ('rejected','archived','stale')"""
+        ).fetchall()
+        for concept in concepts:
+            descendants = self.db.execute(
+                """WITH RECURSIVE downward(id,layer) AS (
+                       SELECT id,layer FROM neurons WHERE id=?
+                       UNION
+                       SELECT n.id,n.layer
+                       FROM downward d
+                       JOIN synapses s ON s.source_id=d.id
+                       JOIN neurons n ON n.id=s.target_id
+                       WHERE n.layer<d.layer
+                         AND n.status NOT IN ('rejected','archived','stale')
+                   )
+                   SELECT
+                     count(DISTINCT CASE WHEN layer=1 THEN id END) AS atoms,
+                     count(DISTINCT CASE WHEN layer=2 THEN id END) AS episodes
+                   FROM downward""",
+                (concept["id"],),
+            ).fetchone()
+            support = int(descendants["atoms"] or 0)
+            episodes = int(descendants["episodes"] or 0)
+            stability = (
+                0.05
+                if support == 0
+                else min(0.98, 1.0 - math.exp(-(support + 0.5 * episodes) / 3.0))
+            )
+            self.db.execute(
+                "UPDATE neurons SET stability=? WHERE id=?",
+                (stability, concept["id"]),
+            )
+
+    def _decay_plastic_synapses(
+        self,
+        reference: datetime | None = None,
+        half_life_days: float = 120.0,
+    ) -> int:
+        """Apply forgetting to plastic links while preserving structural evidence."""
+        reference = reference or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        reference = reference.astimezone(timezone.utc)
+        previous_consolidation = parse_timestamp(
+            self._get_meta("last_consolidated_at")
+        )
+        rows = self.db.execute(
+            """SELECT s.source_id,s.target_id,s.relation,s.weight,s.last_fired,
+                      n.created_at,n.importance,n.stability
+               FROM synapses s JOIN neurons n ON n.id=s.source_id
+               WHERE s.relation IN ('association','co_recalled')"""
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            anchors = [
+                parsed
+                for parsed in (
+                    parse_timestamp(row["last_fired"]),
+                    parse_timestamp(row["created_at"]),
+                    previous_consolidation,
+                )
+                if parsed is not None
+            ]
+            anchor = max(anchors) if anchors else reference
+            age = max(0.0, (reference - anchor).total_seconds() / 86400.0)
+            if age < 1.0:
+                continue
+            protection = 0.55 + 0.45 * (
+                0.5 * float(row["importance"]) + 0.5 * float(row["stability"])
+            )
+            effective_half_life = max(1.0, half_life_days * protection)
+            retained = 0.5 ** (age / effective_half_life)
+            weight = max(0.04, float(row["weight"]) * retained)
+            if abs(weight - float(row["weight"])) < 1e-9:
+                continue
+            self.db.execute(
+                """UPDATE synapses SET weight=?
+                   WHERE source_id=? AND target_id=? AND relation=?""",
+                (weight, row["source_id"], row["target_id"], row["relation"]),
+            )
+            changed += 1
+        self._set_meta(
+            "last_consolidated_at",
+            reference.isoformat(timespec="seconds"),
+        )
+        return changed
+
+    def _consolidate_derived_state(
+        self,
+        apply_decay: bool = False,
+        reference: datetime | None = None,
+    ) -> dict[str, int]:
+        emergent = self._rebuild_emergent_concepts()
+        self._refresh_semantic_stability()
+        duplicate_candidates = self._refresh_concept_duplicate_candidates()
+        decayed = self._decay_plastic_synapses(reference) if apply_decay else 0
+        return {
+            "emergent_concepts": emergent,
+            "concept_duplicate_candidates": duplicate_candidates,
+            "decayed_synapses": decayed,
+        }
+
+    @serialized_write
+    def consolidate(
+        self,
+        reference: datetime | None = None,
+    ) -> dict[str, object]:
+        """Run experience-driven abstraction, stabilization, and safe forgetting."""
+        result = self._consolidate_derived_state(
+            apply_decay=True,
+            reference=reference,
+        )
+        self.db.commit()
+        return {**result, "stats": self.stats()}
+
+    @serialized_write
+    def consolidate_if_due(
+        self,
+        interval: timedelta = timedelta(hours=24),
+        reference: datetime | None = None,
+    ) -> dict[str, object]:
+        """Consolidate once the configured offline interval has elapsed."""
+        if interval.total_seconds() <= 0:
+            raise ValueError("consolidation interval must be positive")
+        reference = reference or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        reference = reference.astimezone(timezone.utc)
+        previous = parse_timestamp(self._get_meta("last_consolidated_at"))
+        if previous is not None:
+            elapsed = max(0.0, (reference - previous).total_seconds())
+            if elapsed < interval.total_seconds():
+                return {
+                    "performed": False,
+                    "last_consolidated_at": previous.isoformat(timespec="seconds"),
+                    "due_at": (previous + interval).isoformat(timespec="seconds"),
+                }
+        try:
+            result = self._consolidate_derived_state(
+                apply_decay=True,
+                reference=reference,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return {
+            "performed": True,
+            "last_consolidated_at": reference.isoformat(timespec="seconds"),
+            "due_at": (reference + interval).isoformat(timespec="seconds"),
+            **result,
+        }
+
+    @serialized_write
+    def review_emergent_concept(self, concept_id: str, decision: str) -> bool:
+        """Persist a human decision about one rebuildable semantic abstraction."""
+        if decision not in {"confirm", "reject"}:
+            raise ValueError("emergent concept decision must be confirm or reject")
+        concept = self.db.execute(
+            """SELECT id FROM neurons
+               WHERE id=? AND layer=3 AND label LIKE 'Emergent Concept %'""",
+            (concept_id,),
+        ).fetchone()
+        if not concept:
+            return False
+        member_ids = sorted(
+            row["source_id"]
+            for row in self.db.execute(
+                """SELECT s.source_id
+                   FROM synapses s JOIN neurons n ON n.id=s.source_id
+                   WHERE s.target_id=? AND s.relation='emergent_member_of'
+                     AND n.layer=1""",
+                (concept_id,),
+            ).fetchall()
+        )
+        reviewed_at = now()
+        status = "confirmed" if decision == "confirm" else "rejected"
+        write_record(
+            self.semantic_review_dir / f"{concept_id}.md",
+            {
+                "format": SEMANTIC_REVIEW_FORMAT,
+                "concept_id": concept_id,
+                "status": status,
+                "member_ids": member_ids,
+                "reviewed_at": reviewed_at,
+            },
+            (
+                f"Human review of {concept_id}: {status}. "
+                f"Supported by {len(member_ids)} atomic memory traces."
+            ),
+        )
+        self.db.execute(
+            """INSERT INTO semantic_reviews(concept_id,status,member_ids,reviewed_at)
+               VALUES(?,?,?,?)
+               ON CONFLICT(concept_id) DO UPDATE SET
+                 status=excluded.status,
+                 member_ids=excluded.member_ids,
+                 reviewed_at=excluded.reviewed_at""",
+            (concept_id, status, json.dumps(member_ids), reviewed_at),
+        )
+        self._persist_concept_identity(
+            concept_id,
+            member_ids,
+            status,
+        )
+        if decision == "confirm":
+            self.db.execute(
+                """UPDATE neurons
+                   SET status='confirmed',confidence=0.95,
+                       stability=max(stability,0.72)
+                   WHERE id=?""",
+                (concept_id,),
+            )
+        else:
+            self.db.execute(
+                "DELETE FROM synapses WHERE source_id=? OR target_id=?",
+                (concept_id, concept_id),
+            )
+            self.db.execute("DELETE FROM neurons WHERE id=?", (concept_id,))
+        self.db.commit()
+        return True
+
+    def _concept_prototype(
+        self, concept: sqlite3.Row
+    ) -> tuple[list[float], set[str]]:
+        atoms = self._related_atoms(concept["id"])
+        member_ids = {str(row["id"]) for row in atoms}
+        if not atoms:
+            return self._vector(concept), member_ids
+        vectors = [self._vector(row) for row in atoms]
+        centroid = [
+            sum(vector[index] for vector in vectors) / len(vectors)
+            for index in range(len(vectors[0]))
+        ]
+        norm = math.sqrt(sum(value * value for value in centroid)) or 1.0
+        return [value / norm for value in centroid], member_ids
+
+    def _refresh_concept_duplicate_candidates(self) -> int:
+        """Propose likely duplicate L3 pairs without merging them automatically."""
+        self.db.execute(
+            "DELETE FROM concept_duplicate_reviews WHERE status='pending'"
+        )
+        concepts = self.db.execute(
+            """SELECT * FROM neurons
+               WHERE layer=3 AND status NOT IN ('rejected','archived','stale')
+               ORDER BY label,id"""
+        ).fetchall()
+        profiles = {
+            row["id"]: self._concept_prototype(row)
+            for row in concepts
+        }
+        label_terms = {
+            row["id"]: {
+                (term[:-1] if term.endswith("s") and len(term) > 3 else term)
+                for term in re.findall(r"[a-z0-9]+", str(row["label"]).casefold())
+            }
+            for row in concepts
+        }
+        created = 0
+        for index, left in enumerate(concepts):
+            left_key = self._concept_key(left)
+            left_vector, left_members = profiles[left["id"]]
+            left_terms = label_terms[left["id"]]
+            for right in concepts[index + 1 :]:
+                right_key = self._concept_key(right)
+                if left_key == right_key:
+                    continue
+                right_vector, right_members = profiles[right["id"]]
+                right_terms = label_terms[right["id"]]
+                vector_score = max(0.0, cosine(left_vector, right_vector))
+                member_overlap = len(left_members & right_members) / max(
+                    1, len(left_members | right_members)
+                )
+                lexical_label_score = len(left_terms & right_terms) / max(
+                    1, len(left_terms | right_terms)
+                )
+                name_vector_score = max(
+                    0.0,
+                    cosine(self._vector(left), self._vector(right)),
+                )
+                label_score = (
+                    0.60 * name_vector_score
+                    + 0.40 * lexical_label_score
+                )
+                combined = (
+                    0.55 * vector_score
+                    + 0.30 * member_overlap
+                    + 0.15 * label_score
+                )
+                emergent_pair = (
+                    str(left["label"]).startswith("Emergent Concept ")
+                    or str(right["label"]).startswith("Emergent Concept ")
+                )
+                eligible = (
+                    (
+                        emergent_pair
+                        and (
+                            (member_overlap >= 0.50 and vector_score >= 0.65)
+                            or vector_score >= 0.95
+                        )
+                    )
+                    or (
+                        not emergent_pair
+                        and label_score >= 0.68
+                        and (
+                            member_overlap >= 0.25
+                            or vector_score >= 0.82
+                        )
+                    )
+                )
+                if not eligible:
+                    continue
+                ordered = sorted(
+                    (
+                        (left_key, str(left["label"])),
+                        (right_key, str(right["label"])),
+                    )
+                )
+                pair_left_key, pair_left_label = ordered[0]
+                pair_right_key, pair_right_label = ordered[1]
+                digest = hashlib.sha256(
+                    f"{pair_left_key}|{pair_right_key}".encode("utf-8")
+                ).hexdigest()[:12]
+                review_id = f"dup_{digest}"
+                cursor = self.db.execute(
+                    """INSERT INTO concept_duplicate_reviews
+                       (id,left_key,right_key,left_label,right_label,vector_score,
+                        member_overlap,label_score,combined_score,status,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,'pending',?)
+                       ON CONFLICT(left_key,right_key) DO UPDATE SET
+                         left_label=excluded.left_label,
+                         right_label=excluded.right_label,
+                         vector_score=excluded.vector_score,
+                         member_overlap=excluded.member_overlap,
+                         label_score=excluded.label_score,
+                         combined_score=excluded.combined_score
+                       WHERE concept_duplicate_reviews.status='pending'""",
+                    (
+                        review_id,
+                        pair_left_key,
+                        pair_right_key,
+                        pair_left_label,
+                        pair_right_label,
+                        vector_score,
+                        member_overlap,
+                        label_score,
+                        combined,
+                        now(),
+                    ),
+                )
+                created += int(cursor.rowcount > 0)
+        return created
+
+    def concept_duplicate_candidates(
+        self, status: str = "pending"
+    ) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in self.db.execute(
+                """SELECT * FROM concept_duplicate_reviews
+                   WHERE status=? ORDER BY combined_score DESC,id""",
+                (status,),
+            )
+        ]
+
+    def _write_concept_decision(
+        self,
+        review: sqlite3.Row,
+        status: str,
+        survivor: sqlite3.Row | None = None,
+        loser: sqlite3.Row | None = None,
+    ) -> None:
+        reviewed_at = now()
+        metadata = {
+            "format": CONCEPT_DECISION_FORMAT,
+            "id": review["id"],
+            "left_key": review["left_key"],
+            "right_key": review["right_key"],
+            "left_label": review["left_label"],
+            "right_label": review["right_label"],
+            "vector_score": float(review["vector_score"]),
+            "member_overlap": float(review["member_overlap"]),
+            "label_score": float(review["label_score"]),
+            "combined_score": float(review["combined_score"]),
+            "status": status,
+            "survivor_key": self._concept_key(survivor) if survivor else "",
+            "survivor_label": str(survivor["label"]) if survivor else "",
+            "loser_label": str(loser["label"]) if loser else "",
+            "created_at": review["created_at"],
+            "reviewed_at": reviewed_at,
+        }
+        write_record(
+            self.concept_decision_dir / f"{review['id']}.md",
+            metadata,
+            (
+                f"Human concept decision: {status}. "
+                f"{review['left_label']} ↔ {review['right_label']}."
+            ),
+        )
+
+    @serialized_write
+    def review_concept_duplicate(self, review_id: str, decision: str) -> bool:
+        if decision not in {"merge-left", "merge-right", "distinct"}:
+            raise ValueError("concept duplicate decision is invalid")
+        review = self.db.execute(
+            """SELECT * FROM concept_duplicate_reviews
+               WHERE id=? AND status='pending'""",
+            (review_id,),
+        ).fetchone()
+        if not review:
+            return False
+        left = self._find_concept_by_key(review["left_key"])
+        right = self._find_concept_by_key(review["right_key"])
+        if not left or not right:
+            return False
+        reviewed_at = now()
+        if decision == "distinct":
+            self._write_concept_decision(review, "distinct")
+            self.db.execute(
+                """UPDATE concept_duplicate_reviews
+                   SET status='distinct',reviewed_at=?
+                   WHERE id=?""",
+                (reviewed_at, review_id),
+            )
+            self.db.commit()
+            return True
+
+        survivor, loser = (
+            (left, right) if decision == "merge-left" else (right, left)
+        )
+        edges = self.db.execute(
+            """SELECT target_id,relation,weight
+               FROM synapses WHERE source_id=?""",
+            (loser["id"],),
+        ).fetchall()
+        for edge in edges:
+            if edge["target_id"] == survivor["id"]:
+                continue
+            self._connect(
+                survivor["id"],
+                edge["target_id"],
+                edge["relation"],
+                float(edge["weight"]),
+            )
+        self.db.execute(
+            "DELETE FROM synapses WHERE source_id=? OR target_id=?",
+            (loser["id"], loser["id"]),
+        )
+        if loser["status"] == "confirmed" and survivor["status"] == "proposed":
+            self.db.execute(
+                "UPDATE neurons SET status='confirmed',confidence=max(confidence,0.95) WHERE id=?",
+                (survivor["id"],),
+            )
+        self.db.execute(
+            "UPDATE neurons SET status='archived' WHERE id=?",
+            (loser["id"],),
+        )
+        survivor_key = self._concept_key(survivor)
+        self.db.execute(
+            """INSERT INTO concept_aliases
+               (alias_key,alias_label,canonical_key,canonical_label,
+                decision_id,created_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(alias_key) DO UPDATE SET
+                 alias_label=excluded.alias_label,
+                 canonical_key=excluded.canonical_key,
+                 canonical_label=excluded.canonical_label,
+                 decision_id=excluded.decision_id""",
+            (
+                normalized_concept_key(str(loser["label"])),
+                str(loser["label"]),
+                survivor_key,
+                str(survivor["label"]),
+                review_id,
+                reviewed_at,
+            ),
+        )
+        if str(loser["label"]).startswith("Emergent Concept "):
+            member_ids = [
+                str(row["id"]) for row in self._related_atoms(survivor["id"])
+            ]
+            self._persist_concept_identity(
+                loser["id"],
+                member_ids,
+                "merged",
+                survivor_key,
+            )
+        self._write_concept_decision(review, "merged", survivor, loser)
+        self.db.execute(
+            """UPDATE concept_duplicate_reviews
+               SET status='merged',survivor_key=?,reviewed_at=?
+               WHERE id=?""",
+            (survivor_key, reviewed_at, review_id),
+        )
+        self.db.commit()
+        return True
+
     @serialized_write
     def remember(
         self,
@@ -745,7 +1801,12 @@ class NeuralMemory:
         supersedes: Iterable[str] = (),
         conflicts: Iterable[str] = (),
     ) -> str:
-        concept_labels = require_english_labels(canonical_concepts(list(topics)), "topics")
+        concept_labels = [
+            self._resolve_concept_alias(label)
+            for label in require_english_labels(
+                canonical_concepts(list(topics)), "topics"
+            )
+        ]
         procedure_labels = require_english_labels(procedures, "procedures")
         evidence_id = short_id("ev")
         neuron_id = short_id("l1")
@@ -781,6 +1842,10 @@ class NeuralMemory:
         }
         write_record(self.memory_dir / f"{neuron_id}.md", record, text)
         self._index_canonical_record(record, text)
+        if confirmed:
+            self._consolidate_derived_state()
+        else:
+            self._refresh_semantic_stability()
         self.db.commit()
         return neuron_id
 
@@ -810,6 +1875,8 @@ class NeuralMemory:
             evidence_id,
             neuron_id,
             str(record.get("expires_at", "")) or None,
+            0.68 if status == "confirmed" else 0.36,
+            created_at,
         )
 
         for target_id in record.get("supersedes", []):
@@ -846,9 +1913,12 @@ class NeuralMemory:
 
         upper_status = status if status in {"confirmed", "proposed", "archived"} else "proposed"
         current_ids = [neuron_id]
-        concept_labels = english_only_labels(
-            canonical_concepts([str(x) for x in record.get("concepts", [])])
-        )
+        concept_labels = [
+            self._resolve_concept_alias(label)
+            for label in english_only_labels(
+                canonical_concepts([str(x) for x in record.get("concepts", [])])
+            )
+        ]
         if not concept_labels and any(token in source.casefold() for token in ("skill", "tool")):
             concept_labels = ["Tools"]
         level_specs: list[tuple[int, list[str], str, str]] = [
@@ -878,6 +1948,11 @@ class NeuralMemory:
                             (upper_status, upper_id),
                         )
                 else:
+                    stable_id = (
+                        self._stable_named_concept_id(upper_label)
+                        if layer == 3
+                        else None
+                    )
                     upper_id = self._create_neuron(
                         layer,
                         upper_label,
@@ -885,6 +1960,7 @@ class NeuralMemory:
                         upper_status,
                         min(0.95, confidence),
                         min(1.0, importance + layer * 0.02),
+                        neuron_id=stable_id,
                     )
                 next_ids.append(upper_id)
                 for lower_id in current_ids:
@@ -1269,12 +2345,24 @@ class NeuralMemory:
             fused_score = (
                 0.45 * vector_score + 0.45 * bm25_score + 0.10 * lexical_coverage
             )
-            governance = row["confidence"] * (0.65 + 0.35 * row["importance"])
-            direct[row["id"]] = fused_score * governance
+            stability = float(row["stability"])
+            retention = 1.0
+            if row["layer"] == 1:
+                anchor = row["last_reactivated"] or row["last_used"] or row["created_at"]
+                age = elapsed_days(anchor)
+                half_life = 30.0 + 335.0 * (
+                    0.45 * float(row["importance"]) + 0.55 * stability
+                )
+                retention = 0.35 + 0.65 * (0.5 ** (age / max(1.0, half_life)))
+            governance = row["confidence"] * (
+                0.65 + 0.30 * row["importance"] + 0.05 * stability
+            )
+            direct[row["id"]] = fused_score * governance * retention
             components[row["id"]] = {
                 "vector": vector_score,
                 "bm25": bm25_score,
                 "lexical": lexical_coverage,
+                "retention": retention,
             }
 
         l1_ids = [row["id"] for row in rows if row["layer"] == 1]
@@ -1319,6 +2407,8 @@ class NeuralMemory:
                     lexical_score=components[neuron_id]["lexical"],
                     direct_activation=direct.get(neuron_id, 0.0),
                     spread_activation=max(0.0, value - direct.get(neuron_id, 0.0)),
+                    stability=float(row["stability"]),
+                    retention=components[neuron_id]["retention"],
                 )
             )
         return result
@@ -1378,7 +2468,12 @@ class NeuralMemory:
         ).fetchall()
         return {row["memory_id"] for row in rows}
 
-    def recall(self, query: str, limit: int = 5) -> list[ActivatedNeuron]:
+    def recall(
+        self,
+        query: str,
+        limit: int = 5,
+        reconsolidate: bool = False,
+    ) -> list[ActivatedNeuron]:
         activated = self.activate(query)
         cards = [item for item in activated if item.layer == 1]
         topic_memory_ids = self._topic_memory_ids(activated, query)
@@ -1389,7 +2484,10 @@ class NeuralMemory:
             ]
             if scoped:
                 cards = scoped
-        return cards[:limit]
+        cards = cards[:limit]
+        if reconsolidate and cards:
+            self.reinforce([card.id for card in cards])
+        return cards
 
     def evidence_text(self, evidence_id: str) -> str:
         row = self.db.execute("SELECT path,source FROM evidence WHERE id=?", (evidence_id,)).fetchone()
@@ -1441,17 +2539,29 @@ class NeuralMemory:
 
     @serialized_write
     def reinforce(self, neuron_ids: list[str], amount: float = 0.08) -> None:
-        """Hebbian learning: neurons recalled together strengthen their links."""
+        """Retrieval reconsolidation: stabilize traces and strengthen co-active links."""
+        fired_at = now()
         for index, left in enumerate(neuron_ids):
             for right in neuron_ids[index + 1 :]:
                 self._connect(left, right, "co_recalled", amount)
-            self.db.execute("UPDATE neurons SET last_used=? WHERE id=?", (now(), left))
+            self.db.execute(
+                """UPDATE neurons
+                   SET last_used=?,
+                       last_reactivated=?,
+                       reactivation_count=reactivation_count+1,
+                       stability=min(1.0, stability + ? * (1.0-stability))
+                   WHERE id=?""",
+                (fired_at, fired_at, max(0.0, amount), left),
+            )
         self.db.execute(
-            "UPDATE synapses SET last_fired=? WHERE source_id IN ({})".format(
+            """UPDATE synapses
+               SET last_fired=?,fire_count=fire_count+1
+               WHERE source_id IN ({})""".format(
                 ",".join("?" for _ in neuron_ids)
             ),
-            (now(), *neuron_ids),
+            (fired_at, *neuron_ids),
         ) if neuron_ids else None
+        self._refresh_semantic_stability()
         self.db.commit()
 
     def _has_active_l1_descendant(self, neuron_id: str) -> bool:
@@ -1601,6 +2711,7 @@ class NeuralMemory:
         write_record(restored, metadata, body)
         rejected_memory.unlink()
         self._index_canonical_record(metadata, body)
+        self._consolidate_derived_state()
         self.db.commit()
         return True
 
@@ -1615,12 +2726,18 @@ class NeuralMemory:
             self._archive_rejected_record(neuron_id)
             self._prune_orphan_semantic_nodes()
             self.archive_orphan_evidence()
+            self._consolidate_derived_state()
             self.db.commit()
             return True
         confidence = 0.98 if status == "confirmed" else row["confidence"]
         self.db.execute(
-            "UPDATE neurons SET status=?, confidence=? WHERE id=?",
-            (status, confidence, neuron_id),
+            """UPDATE neurons
+               SET status=?, confidence=?,
+                   stability=CASE WHEN ?='confirmed'
+                                  THEN max(stability,0.68)
+                                  ELSE stability END
+               WHERE id=?""",
+            (status, confidence, status, neuron_id),
         )
         canonical = self.memory_dir / f"{neuron_id}.md"
         if canonical.exists():
@@ -1628,6 +2745,7 @@ class NeuralMemory:
             metadata["status"] = status
             metadata["confidence"] = confidence
             write_record(canonical, metadata, body)
+        self._consolidate_derived_state()
         self.db.commit()
         return True
 
@@ -1766,6 +2884,28 @@ class NeuralMemory:
             "pending_annotations": self.db.execute(
                 "SELECT count(*) FROM annotation_proposals WHERE status='pending'"
             ).fetchone()[0],
+            "biological_memory": {
+                "emergent_concepts": self.db.execute(
+                    """SELECT count(*) FROM neurons
+                       WHERE layer=3 AND label LIKE 'Emergent Concept %'"""
+                ).fetchone()[0],
+                "reviewed_emergent_concepts": self.db.execute(
+                    "SELECT count(*) FROM semantic_reviews"
+                ).fetchone()[0],
+                "stable_concept_identities": self.db.execute(
+                    "SELECT count(*) FROM concept_identities"
+                ).fetchone()[0],
+                "pending_concept_duplicates": self.db.execute(
+                    """SELECT count(*) FROM concept_duplicate_reviews
+                       WHERE status='pending'"""
+                ).fetchone()[0],
+                "concept_aliases": self.db.execute(
+                    "SELECT count(*) FROM concept_aliases"
+                ).fetchone()[0],
+                "reactivations": self.db.execute(
+                    "SELECT coalesce(sum(reactivation_count),0) FROM neurons"
+                ).fetchone()[0],
+            },
         }
 
     def network(self) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
@@ -1815,11 +2955,19 @@ class NeuralMemory:
         self.db.execute("DELETE FROM synapses")
         self.db.execute("DELETE FROM neurons")
         self.db.execute("DELETE FROM evidence")
+        self.db.execute("DELETE FROM semantic_reviews")
+        self.db.execute("DELETE FROM concept_identities")
+        self.db.execute("DELETE FROM concept_duplicate_reviews")
+        self.db.execute("DELETE FROM concept_aliases")
+        self._load_semantic_reviews()
+        self._load_concept_identities()
+        self._load_concept_decisions()
         for metadata, body in records:
             evidence_path = self.root / str(metadata["evidence_path"])
             if not evidence_path.is_file():
                 raise FileNotFoundError(f"canonical evidence missing: {evidence_path}")
             self._index_canonical_record(metadata, body)
+        self._consolidate_derived_state()
         self.db.commit()
         return {"records": len(records), "stats": self.stats()}
 
@@ -1835,7 +2983,7 @@ class NeuralMemory:
                    JOIN neurons n ON n.id=s.target_id
                    WHERE n.layer<d.layer
                      AND d.depth<?
-                     AND s.relation IN ('member_of','episode')
+                     AND s.relation IN ('member_of','emergent_member_of','episode')
                )
                SELECT DISTINCT n.*,e.source FROM descendants d
                JOIN neurons n ON n.id=d.id
@@ -1926,16 +3074,34 @@ class NeuralMemory:
         )
         page = next((item for item in maintenance_pages if item.is_file()), None)
         if page is None:
-            return {"confirmed": 0, "needs_revision": 0, "rejected": 0, "errors": []}
+            return {
+                "confirmed": 0,
+                "needs_revision": 0,
+                "rejected": 0,
+                "concepts_confirmed": 0,
+                "concepts_rejected": 0,
+                "concepts_merged": 0,
+                "concepts_kept_distinct": 0,
+                "errors": [],
+            }
+        page_text = page.read_text(encoding="utf-8")
         decisions: dict[str, list[str]] = {}
-        for action, neuron_id in MEMORY_REVIEW_RE.findall(
-            page.read_text(encoding="utf-8")
-        ):
+        for action, neuron_id in MEMORY_REVIEW_RE.findall(page_text):
             decisions.setdefault(neuron_id, []).append(action)
+        concept_decisions: dict[str, list[str]] = {}
+        for action, concept_id in CONCEPT_REVIEW_RE.findall(page_text):
+            concept_decisions.setdefault(concept_id, []).append(action)
+        duplicate_decisions: dict[str, list[str]] = {}
+        for action, review_id in CONCEPT_DUPLICATE_REVIEW_RE.findall(page_text):
+            duplicate_decisions.setdefault(review_id, []).append(action)
         result: dict[str, object] = {
             "confirmed": 0,
             "needs_revision": 0,
             "rejected": 0,
+            "concepts_confirmed": 0,
+            "concepts_rejected": 0,
+            "concepts_merged": 0,
+            "concepts_kept_distinct": 0,
             "errors": [],
         }
         errors = result["errors"]
@@ -1965,6 +3131,32 @@ class NeuralMemory:
                     "Human reviewer marked this proposed memory as needing revision in Obsidian.",
                 )
                 result["needs_revision"] = int(result["needs_revision"]) + 1
+        for concept_id, actions in concept_decisions.items():
+            unique_actions = list(dict.fromkeys(actions))
+            if len(unique_actions) != 1:
+                errors.append(f"{concept_id}: select exactly one concept review option")
+                continue
+            action = unique_actions[0]
+            if not self.review_emergent_concept(concept_id, action):
+                continue
+            key = "concepts_confirmed" if action == "confirm" else "concepts_rejected"
+            result[key] = int(result[key]) + 1
+        for review_id, actions in duplicate_decisions.items():
+            unique_actions = list(dict.fromkeys(actions))
+            if len(unique_actions) != 1:
+                errors.append(
+                    f"{review_id}: select exactly one duplicate-concept review option"
+                )
+                continue
+            action = unique_actions[0]
+            if not self.review_concept_duplicate(review_id, action):
+                continue
+            key = (
+                "concepts_kept_distinct"
+                if action == "distinct"
+                else "concepts_merged"
+            )
+            result[key] = int(result[key]) + 1
         self.db.commit()
         return result
 
@@ -2191,6 +3383,70 @@ class NeuralMemory:
             + f"\n  - [ ] Incorrect / reject <!-- review:reject:{row['id']} -->"
             for row in proposed_memories
         ) or "- No proposed memories"
+        emergent_concepts = self.db.execute(
+            """SELECT * FROM neurons
+               WHERE layer=3 AND status='proposed'
+                 AND label LIKE 'Emergent Concept %'
+               ORDER BY label"""
+        ).fetchall()
+        concept_sections: list[str] = []
+        for concept in emergent_concepts:
+            members = self.db.execute(
+                """SELECT n.id,n.label,n.summary
+                   FROM synapses s JOIN neurons n ON n.id=s.source_id
+                   WHERE s.target_id=? AND s.relation='emergent_member_of'
+                     AND n.layer=1
+                   ORDER BY n.created_at,n.id""",
+                (concept["id"],),
+            ).fetchall()
+            member_links = "\n".join(
+                f"    - [[vault/memories/{row['id']}|{row['id']}]] — {compact(row['label'], 90)}"
+                for row in members
+            ) or "    - No active supporting memories"
+            concept_sections.append(
+                f"- `{concept['id']}` **{concept['label']}** "
+                f"(support: {len(members)}, stability: {float(concept['stability']):.2f})\n"
+                f"  - {compact(concept['summary'], 180)}\n"
+                "  - Supporting L1 traces:\n"
+                f"{member_links}\n"
+                f"  - [ ] Confirm concept and connections <!-- concept-review:confirm:{concept['id']} -->\n"
+                f"  - [ ] Reject concept and suppress this exact pattern <!-- concept-review:reject:{concept['id']} -->"
+            )
+        emergent_concept_lines = (
+            "\n".join(concept_sections)
+            if concept_sections
+            else "- No emergent semantic concepts awaiting review"
+        )
+        duplicate_sections: list[str] = []
+        for duplicate in self.concept_duplicate_candidates():
+            left = self._find_concept_by_key(str(duplicate["left_key"]))
+            right = self._find_concept_by_key(str(duplicate["right_key"]))
+            if not left or not right:
+                continue
+            left_members = self._related_atoms(left["id"])
+            right_members = self._related_atoms(right["id"])
+            duplicate_sections.append(
+                f"- `{duplicate['id']}` "
+                f"[[topics/{safe_filename(str(left['label']))}|{left['label']}]] ↔ "
+                f"[[topics/{safe_filename(str(right['label']))}|{right['label']}]]\n"
+                f"  - Combined: {float(duplicate['combined_score']):.2f}; "
+                f"prototype: {float(duplicate['vector_score']):.2f}; "
+                f"member overlap: {float(duplicate['member_overlap']):.2f}; "
+                f"name: {float(duplicate['label_score']):.2f}\n"
+                f"  - Left supporting L1: {len(left_members)}; "
+                f"right supporting L1: {len(right_members)}\n"
+                f"  - [ ] Merge into left; keep right as an alias "
+                f"<!-- concept-duplicate-review:merge-left:{duplicate['id']} -->\n"
+                f"  - [ ] Merge into right; keep left as an alias "
+                f"<!-- concept-duplicate-review:merge-right:{duplicate['id']} -->\n"
+                f"  - [ ] Keep distinct and suppress future prompts for this pair "
+                f"<!-- concept-duplicate-review:distinct:{duplicate['id']} -->"
+            )
+        duplicate_lines = (
+            "\n".join(duplicate_sections)
+            if duplicate_sections
+            else "- No similar L3 concepts awaiting review"
+        )
         issue_lines = "\n".join(
             f"- `{item['id']}` **{item['severity']}** {item['kind']}: {item['details']}"
             for item in inbox["issues"]
@@ -2211,6 +3467,10 @@ class NeuralMemory:
             "## Proposed memories\n\n" + proposed_memory_lines + "\n\n"
             "Select exactly one option for each memory, then use the submit button below. Confirmation and rejection update the canonical status; needs revision keeps the candidate proposed and adds a maintenance issue. CLI fallback: `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian`.\n\n"
             "```neural-memory-submit\nSubmit selected review decisions\n```\n\n"
+            "## Emergent semantic concepts\n\n" + emergent_concept_lines + "\n\n"
+            "These L3 candidates were derived from repeated confirmed L1 traces. Confirming preserves the concept and its connections; rejecting records a canonical suppression decision so the same support pattern is not regenerated.\n\n"
+            "## Similar L3 merge review\n\n" + duplicate_lines + "\n\n"
+            "The system never merges semantic concepts automatically. Merge decisions preserve the stable concept identity, the former name as an alias, and an auditable history. A distinct decision suppresses repeated prompts for the same pair.\n\n"
             "## Human annotation candidates\n\n" + proposal_lines + "\n\n"
             "## System issues\n\n" + issue_lines + "\n\n"
             "## Pending relationships\n\n" + relation_lines + "\n",
@@ -2596,6 +3856,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor")
     commands.add_parser("network")
     commands.add_parser("rebuild")
+    commands.add_parser("consolidate")
     reencoder = commands.add_parser("reencode")
     reencoder.add_argument("config", type=Path)
     commands.add_parser("compile-obsidian")
@@ -2603,6 +3864,12 @@ def parser() -> argparse.ArgumentParser:
     obsidian_review = commands.add_parser("obsidian-review")
     obsidian_review.add_argument("action", choices=["list", "show", "accept", "reject"])
     obsidian_review.add_argument("proposal_id", nargs="?")
+    concept_duplicate = commands.add_parser("concept-duplicate")
+    concept_duplicate.add_argument(
+        "action",
+        choices=["list", "merge-left", "merge-right", "distinct"],
+    )
+    concept_duplicate.add_argument("review_id", nargs="?")
     evaluator = commands.add_parser("evaluate")
     evaluator.add_argument("cases", type=Path)
     evaluator.add_argument("--limit", type=int, default=3)
@@ -2690,7 +3957,7 @@ def main(argv: list[str] | None = None) -> int:
                 "known": known,
                 "peak_l1_activation": round(peak, 4),
                 "encoder": memory.stats()["encoder"],
-                "formula": "governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
+                "formula": "retention * governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
                 "activations": [
                     {
                         "id": item.id,
@@ -2702,6 +3969,8 @@ def main(argv: list[str] | None = None) -> int:
                         "vector": round(item.vector_score, 4),
                         "bm25": round(item.bm25_score, 4),
                         "lexical": round(item.lexical_score, 4),
+                        "stability": round(item.stability, 4),
+                        "retention": round(item.retention, 4),
                     }
                     for item in activated[:args.limit]
                 ],
@@ -2768,6 +4037,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
         elif args.command == "rebuild":
             print(json.dumps(memory.rebuild_index(), ensure_ascii=False, indent=2))
+        elif args.command == "consolidate":
+            print(json.dumps(memory.consolidate(), ensure_ascii=False, indent=2))
         elif args.command == "reencode":
             print(json.dumps(memory.reencode_all(args.config), ensure_ascii=False, indent=2))
         elif args.command == "compile-obsidian":
@@ -2777,7 +4048,15 @@ def main(argv: list[str] | None = None) -> int:
             annotation_sync = memory.sync_obsidian_notes()
             review_changes = sum(
                 int(review_sync[key])
-                for key in ("confirmed", "needs_revision", "rejected")
+                for key in (
+                    "confirmed",
+                    "needs_revision",
+                    "rejected",
+                    "concepts_confirmed",
+                    "concepts_rejected",
+                    "concepts_merged",
+                    "concepts_kept_distinct",
+                )
             )
             should_compile = review_changes > 0 or int(annotation_sync["created"]) > 0
             view = memory.compile_obsidian() if should_compile and not review_sync["errors"] else None
@@ -2812,6 +4091,28 @@ def main(argv: list[str] | None = None) -> int:
                         "decision": args.action,
                         "result": outcome,
                     }, ensure_ascii=False, indent=2))
+        elif args.command == "concept-duplicate":
+            if args.action == "list":
+                print(json.dumps(
+                    memory.concept_duplicate_candidates(),
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            else:
+                if not args.review_id:
+                    print("review_id is required", file=sys.stderr)
+                    return 2
+                if not memory.review_concept_duplicate(
+                    args.review_id,
+                    args.action,
+                ):
+                    print(
+                        "duplicate review not found or already closed",
+                        file=sys.stderr,
+                    )
+                    return 1
+                memory.compile_obsidian()
+                print(f"{args.review_id}: {args.action}")
         elif args.command == "evaluate":
             print(json.dumps(memory.evaluate(args.cases, args.limit), ensure_ascii=False, indent=2))
         elif args.command == "benchmark":

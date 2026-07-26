@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0 - 2026-07-26
+
+- Add 24-hour startup catch-up consolidation guarded across processes.
+- Preserve stable identities for emergent and explicitly named L3 concepts.
+- Propose likely duplicate L3 concepts without automatic merging.
+- Add human merge-left, merge-right, and distinct decisions in Obsidian and CLI.
+- Persist concept identities, aliases, and duplicate decisions as canonical Markdown.
+- Expand regression coverage to 52 automated tests.
+
+## 1.1.0 - 2026-07-26
+
+- Add experience-driven L3 emergence from repeated confirmed L1 traces.
+- Add trace stability, reactivation counts, retention weighting, reconsolidation, and plastic synapse decay.
+- Keep forgetting non-destructive: canonical Markdown memory and evidence are never removed by consolidation.
+- Add Obsidian review of emergent concepts and their supporting L1 connections.
+- Persist concept confirmation and suppression decisions as canonical Markdown so rebuilds preserve human governance.
+- Add the `consolidate` command and optional `recall --learn` / MCP `learn` reconsolidation.
+- Expand regression coverage to 45 automated tests.
+
 ## 1.0.6 - 2026-07-22
 
 - Compile active English L4 procedures and L5 persona/model records into real Obsidian relation pages, instead of unresolved WikiLink placeholders.

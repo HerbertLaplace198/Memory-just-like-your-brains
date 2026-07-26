@@ -22,6 +22,18 @@ PROTOCOL_VERSION = "2025-06-18"
 class MCPServer:
     def __init__(self, root: Path, encoder_config: Path | None = None):
         self.memory = NeuralMemory(root, resolve_encoder(root, encoder_config))
+        try:
+            self.startup_consolidation = self.memory.consolidate_if_due()
+            if self.startup_consolidation["performed"]:
+                view = self.memory.compile_obsidian()
+                self.startup_consolidation["obsidian_pages"] = view["pages"]
+        except Exception as exc:
+            self.memory.db.rollback()
+            self.startup_consolidation = {
+                "performed": False,
+                "error": str(exc),
+            }
+            print(f"startup consolidation skipped: {exc}", file=sys.stderr)
 
     def close(self) -> None:
         self.memory.close()
@@ -54,6 +66,10 @@ class MCPServer:
                         "query": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 5},
                         "detail": {"type": "boolean"},
+                        "learn": {
+                            "type": "boolean",
+                            "description": "Opt in to retrieval reconsolidation and Hebbian strengthening.",
+                        },
                     },
                     "required": ["query"],
                     "additionalProperties": False,
@@ -136,6 +152,7 @@ class MCPServer:
             query = self._required_text(arguments, "query")
             limit = max(1, min(5, int(arguments.get("limit", 3))))
             detail = bool(arguments.get("detail", False))
+            learn = bool(arguments.get("learn", False))
             known, peak, _ = self.memory.probe(query)
             if not known:
                 return {
@@ -144,7 +161,7 @@ class MCPServer:
                     "cards": [],
                     "reason": "recall gate closed",
                 }
-            cards = self.memory.recall(query, limit)
+            cards = self.memory.recall(query, limit, reconsolidate=learn)
             result_cards: list[dict[str, Any]] = []
             for card in cards:
                 result: dict[str, Any] = {
@@ -157,7 +174,11 @@ class MCPServer:
                 if detail and card.evidence_id:
                     result["evidence"] = self.memory.evidence_text(card.evidence_id)
                 result_cards.append(result)
-            return {"known": True, "cards": result_cards}
+            return {
+                "known": True,
+                "cards": result_cards,
+                "reconsolidated": learn and bool(result_cards),
+            }
         if name == "memory_explain":
             query = self._required_text(arguments, "query")
             limit = max(1, min(10, int(arguments.get("limit", 7))))
@@ -165,7 +186,7 @@ class MCPServer:
             return {
                 "known": known,
                 "peak_l1_activation": round(peak, 4),
-                "formula": "governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
+                "formula": "retention * governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
                 "activations": [
                     {
                         "id": item.id,
@@ -177,6 +198,8 @@ class MCPServer:
                         "vector": round(item.vector_score, 4),
                         "bm25": round(item.bm25_score, 4),
                         "lexical": round(item.lexical_score, 4),
+                        "stability": round(item.stability, 4),
+                        "retention": round(item.retention, 4),
                     }
                     for item in activated[:limit]
                 ],
@@ -225,7 +248,7 @@ class MCPServer:
             return self._result(request_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "neural-memory", "version": "1.0.5"},
+                "serverInfo": {"name": "neural-memory", "version": "1.2.0"},
             })
         if method == "notifications/initialized":
             return None

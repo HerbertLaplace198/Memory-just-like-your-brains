@@ -231,6 +231,33 @@ python3 neural_memory.py \
   recall "Continue the release plan" --limit 1 --detail
 ```
 
+### Opt in to reconsolidation
+
+Ordinary recall is read-only. Add `--learn` only when a successful retrieval
+should stabilize the recalled L1 traces and strengthen their co-active links:
+
+```bash
+python3 neural_memory.py \
+  --root /ABSOLUTE/PATH/my-neural-memory \
+  recall "Continue the release plan" --limit 3 --learn
+```
+
+Run periodic semantic consolidation and plastic-link decay explicitly:
+
+```bash
+python3 neural_memory.py \
+  --root /ABSOLUTE/PATH/my-neural-memory \
+  consolidate
+```
+
+Consolidation may create a proposed emergent L3 concept from three or more
+similar confirmed L1 traces that have no shared explicit topic. It never
+deletes canonical memory or evidence.
+
+The MCP server also runs this cycle on startup when the previous consolidation
+is at least 24 hours old. Cooperating clients share the write lock, so only one
+client performs an overdue cycle.
+
 ### Explain an incorrect result
 
 ```bash
@@ -239,7 +266,8 @@ python3 neural_memory.py \
   explain "Unexpected query" --limit 10
 ```
 
-The explanation includes vector, BM25, lexical, direct, and spread scores. Use it to tune `gate_threshold` and add regression queries.
+The explanation includes vector, BM25, lexical, stability, retention, direct,
+and spread scores. Use it to tune `gate_threshold` and add regression queries.
 
 ## 7. Generate and maintain the Obsidian view
 
@@ -272,6 +300,30 @@ obsidian-view/
 
 Every active English L4 procedure and L5 persona/model that is connected to a topic gets a real generated page. Topic pages link to those pages, and each relation page links back to its related topics. Legacy non-English structural labels are not emitted as WikiLinks, so they cannot appear as uncreated graph nodes.
 
+`99 Maintenance.md` also lists every proposed emergent L3 concept, its
+stability, and the L1 traces that support it. Select exactly one concept action:
+
+- **Confirm concept and connections** preserves the abstraction across index rebuilds.
+- **Reject concept and suppress this exact pattern** prevents the same set of
+  supporting traces from recreating it.
+
+Submit the decision with the Obsidian plugin button or `sync-obsidian`.
+Decisions are stored as canonical Markdown under `vault/semantic-reviews/`.
+
+Likely duplicate L3 concepts appear in the same maintenance page. They are
+never merged automatically. Review them in Obsidian, or use:
+
+```bash
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
+  concept-duplicate list
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
+  concept-duplicate distinct DUPLICATE_REVIEW_ID
+```
+
+The other decisions are `merge-left` and `merge-right`. Stable concept
+identities are stored under `vault/concept-identities/`; merge, alias, and
+distinct decisions are stored under `vault/concept-decisions/`.
+
 Write human notes only inside the `USER-NOTES` block. Synchronize them into review candidates:
 
 ```bash
@@ -302,7 +354,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.0.6/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.2.0/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]

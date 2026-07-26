@@ -1,10 +1,10 @@
-# Neural Memory 1.0.6 Acceptance Report
+# Neural Memory 1.2.0 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.0.6 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.2.0 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.0.6 compiles active English L4 procedure and L5 persona/model records into real Obsidian relation pages. Topic pages link to those pages, and the relation pages link back to their topics, including L3 → L4 → L5 routes. Legacy non-English structural labels are excluded from the generated graph. It preserves automatic recompilation after every successful review submission and all v1.0.4 rejection-archive improvements.
+Version 1.2.0 adds 24-hour startup catch-up consolidation, stable L3 identities, duplicate-concept review, persistent aliases, and durable merge or distinct decisions. It retains the biologically inspired trace stability, retrieval reconsolidation, safe plastic-link decay, and experience-driven L3 emergence introduced in 1.1.0. Canonical L1 memory and evidence never decay or disappear automatically.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -14,12 +14,15 @@ The synthetic test library contains five atomic memories and thirteen L1-L6 neur
 
 | Encoder | Gate accuracy | Top-1 | Top-3 |
 |---|---:|---:|---:|
-| 1024-dimensional feature hash | 61.54% | 50.00% | 50.00% |
-| Qwen3-Embedding-0.6B | 100.00% | 83.33% | 100.00% |
+| 1024-dimensional feature hash (1.1.0) | 69.23% | 50.00% | 50.00% |
+| Qwen3-Embedding-0.6B (1.0.6 baseline) | 100.00% | 83.33% | 100.00% |
 
 The English-only corpus changes tokenization and embedding geometry, so both gates were recalibrated. Hash mode uses `0.48`. Qwen mode uses a direct semantic gate of `0.55`, with an additional `0.15` margin for semantic-only matches that have no lexical support. Neural awareness no longer uses spread-inflated final activation as its gate score.
 
-These results come from a small synthetic regression set. They do not represent an open-domain quality ceiling.
+The feature-hash result was rerun for 1.1.0. The Qwen row is the retained
+1.0.6 baseline and must be rerun before publishing a new neural-encoder claim.
+These results come from a small synthetic regression set. They do not represent
+an open-domain quality ceiling.
 
 ## Security boundaries
 
@@ -40,11 +43,28 @@ These results come from a small synthetic regression set. They do not represent 
 
 ## Acceptance record
 
-- 42 automated tests passed, including generated L4/L5 relation pages, English-only relation output, automatic recompilation, and episode-routed topic linking after review submission.
+- 52 automated tests passed, including 24-hour startup catch-up, cross-client serialization, stable L3 identity, duplicate review, rebuild-persistent aliases and distinct decisions, emergent L3 formation, retrieval reconsolidation, and non-destructive decay.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
+
+## 1.2.0 regression scope
+
+- Run startup consolidation only when the 24-hour interval is due.
+- Allow concurrent MCP clients to perform only one due consolidation.
+- Preserve an emergent concept identity when its supporting L1 set grows.
+- Detect duplicate L3 concepts without automatically merging them.
+- Preserve merge aliases and distinct decisions through a full index rebuild.
+
+## 1.1.0 regression scope
+
+- Form proposed L3 concepts from repeated semantically similar confirmed L1 traces.
+- Derive semantic stability from supporting atomic and episodic memory.
+- Reconsolidate explicitly recalled traces and expose retention in retrieval explanations.
+- Decay only plastic associations while preserving canonical evidence.
+- Review L3 concepts and supporting connections in Obsidian.
+- Rebuild confirmed or suppressed concept decisions from canonical Markdown.
 
 ## 1.0.6 regression scope
 

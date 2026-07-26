@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.codegraph/
 
 # Real memory stores and derived indexes may contain private data.
 memory/

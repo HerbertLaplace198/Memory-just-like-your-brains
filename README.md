@@ -1,8 +1,30 @@
-# Neural Memory 1.0.6
+# Neural Memory 1.2.0
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.2.0
+
+- Run overdue semantic consolidation when the MCP server starts, using a
+  24-hour interval and a cross-process lock.
+- Give emergent and named L3 concepts stable identities across consolidation
+  and full index rebuilds.
+- Detect likely duplicate L3 concepts as review candidates without merging
+  them automatically.
+- Let reviewers merge into either concept or mark a pair distinct. Aliases and
+  decisions are canonical Markdown and survive rebuilds.
+
+## What changed in 1.1.0
+
+- Treat L1 records as memory traces with stability, reactivation count, and time-dependent retention.
+- Form proposed emergent L3 concepts when at least three semantically similar confirmed L1 traces have no shared explicit topic.
+- Derive L3 stability from the number and episodic diversity of its supporting memories.
+- Add retrieval reconsolidation with `recall --learn`, strengthening co-active traces without making ordinary recall mutate state.
+- Add `consolidate` for safe plastic-link decay and semantic reorganization. Forgetting changes retrieval strength but never deletes canonical memory or evidence.
+- Show emergent L3 concepts and every supporting L1 connection in Obsidian's maintenance page. Human confirmation or rejection is stored as canonical Markdown and survives index rebuilds.
+
+This is a biologically inspired computational model, not a literal simulation of a human brain. See [`BIOLOGICAL_MODEL.md`](BIOLOGICAL_MODEL.md) for the design boundary.
 
 ## What changed in 1.0.6
 

@@ -4,6 +4,7 @@ import json
 import zipfile
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -14,8 +15,10 @@ from neural_memory import (
     NeuralMemory,
     import_bundle,
     main,
+    read_record,
     seed_demo,
     verify_bundle,
+    write_record,
 )
 from mcp_server import MCPServer
 from lifecycle_hook import LifecycleHook
@@ -215,6 +218,143 @@ class NeuralMemoryTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertGreater(count, 0)
 
+    def test_retrieval_reconsolidates_atomic_traces(self):
+        neuron_id = self.memory.remember(
+            "Repeated retrieval should stabilize this memory trace.",
+            "test",
+            topics=["Memory"],
+            confirmed=True,
+        )
+        before = self.memory.db.execute(
+            "SELECT stability,reactivation_count,last_reactivated FROM neurons WHERE id=?",
+            (neuron_id,),
+        ).fetchone()
+
+        cards = self.memory.recall(
+            "stabilize this memory trace",
+            1,
+            reconsolidate=True,
+        )
+
+        after = self.memory.db.execute(
+            "SELECT stability,reactivation_count,last_reactivated FROM neurons WHERE id=?",
+            (neuron_id,),
+        ).fetchone()
+        self.assertEqual([card.id for card in cards], [neuron_id])
+        self.assertGreater(after["stability"], before["stability"])
+        self.assertEqual(after["reactivation_count"], before["reactivation_count"] + 1)
+        self.assertIsNotNone(after["last_reactivated"])
+
+    def test_similar_confirmed_fragments_form_proposed_emergent_l3(self):
+        fragments = [
+            (
+                "A risk model connects uncertainty evidence and long term decisions "
+                "during thesis research.",
+                "Thesis",
+            ),
+            (
+                "A risk model connects uncertainty evidence and long term decisions "
+                "during portfolio planning.",
+                "Investment",
+            ),
+            (
+                "Risk models connect uncertainty evidence and long term decisions "
+                "when evaluating projects.",
+                "Project Evaluation",
+            ),
+        ]
+        memory_ids = [
+            self.memory.remember(text, "test", topics=[topic], confirmed=True)
+            for text, topic in fragments
+        ]
+
+        concept = self.memory.db.execute(
+            """SELECT id,status,stability FROM neurons
+               WHERE layer=3 AND label LIKE 'Emergent Concept %'"""
+        ).fetchone()
+        self.assertIsNotNone(concept)
+        self.assertEqual(concept["status"], "proposed")
+        self.assertGreater(concept["stability"], 0.5)
+        linked = {
+            row["source_id"]
+            for row in self.memory.db.execute(
+                """SELECT source_id FROM synapses
+                   WHERE target_id=? AND relation='emergent_member_of'""",
+                (concept["id"],),
+            )
+        }
+        self.assertEqual(linked, set(memory_ids))
+
+        self.memory.compile_obsidian()
+        maintenance = self.memory.obsidian_dir / "99 Maintenance.md"
+        text = maintenance.read_text(encoding="utf-8")
+        self.assertIn("## Emergent semantic concepts", text)
+        self.assertIn(concept["id"], text)
+        for memory_id in memory_ids:
+            self.assertIn(memory_id, text)
+        text = text.replace(
+            f"- [ ] Confirm concept and connections <!-- concept-review:confirm:{concept['id']} -->",
+            f"- [x] Confirm concept and connections <!-- concept-review:confirm:{concept['id']} -->",
+        )
+        maintenance.write_text(text, encoding="utf-8")
+
+        review = self.memory.sync_obsidian_reviews()
+        self.assertEqual(review["concepts_confirmed"], 1)
+        self.assertEqual(
+            self.memory.db.execute(
+                "SELECT status FROM neurons WHERE id=?", (concept["id"],)
+            ).fetchone()[0],
+            "confirmed",
+        )
+        self.assertTrue(
+            (self.memory.semantic_review_dir / f"{concept['id']}.md").is_file()
+        )
+
+        self.memory.rebuild_index()
+        rebuilt = self.memory.db.execute(
+            "SELECT status FROM neurons WHERE id=?", (concept["id"],)
+        ).fetchone()
+        self.assertIsNotNone(rebuilt)
+        self.assertEqual(rebuilt["status"], "confirmed")
+
+    def test_consolidation_decays_links_without_deleting_canonical_memory(self):
+        left = self.memory.remember(
+            "Long-term evidence supports calibrated risk decisions.",
+            "test",
+            confirmed=True,
+        )
+        right = self.memory.remember(
+            "Calibrated risk decisions depend on long-term evidence.",
+            "test",
+            confirmed=True,
+        )
+        before = self.memory.db.execute(
+            """SELECT weight FROM synapses
+               WHERE source_id=? AND target_id=? AND relation='association'""",
+            (left, right),
+        ).fetchone()[0]
+
+        future = datetime.now(timezone.utc) + timedelta(days=365)
+        result = self.memory.consolidate(reference=future)
+        after = self.memory.db.execute(
+            """SELECT weight FROM synapses
+               WHERE source_id=? AND target_id=? AND relation='association'""",
+            (left, right),
+        ).fetchone()[0]
+
+        self.assertGreater(result["decayed_synapses"], 0)
+        self.assertLess(after, before)
+        self.assertTrue((self.memory.memory_dir / f"{left}.md").is_file())
+        self.assertTrue((self.memory.memory_dir / f"{right}.md").is_file())
+        repeated = self.memory.consolidate(reference=future)
+        repeated_weight = self.memory.db.execute(
+            """SELECT weight FROM synapses
+               WHERE source_id=? AND target_id=? AND relation='association'""",
+            (left, right),
+        ).fetchone()[0]
+        self.assertEqual(repeated["decayed_synapses"], 0)
+        self.assertEqual(repeated_weight, after)
+
     def test_token_budget_benchmark(self):
         seed_demo(self.memory)
         result = self.memory.benchmark("How can I save tokens?", 2)
@@ -283,6 +423,10 @@ class NeuralMemoryTests(unittest.TestCase):
 
     def test_l0_to_l6_and_markdown_rebuild(self):
         seed_demo(self.memory)
+        memory_path = next(self.memory.memory_dir.glob("*.md"))
+        metadata, body = read_record(memory_path)
+        metadata["created_at"] = "2020-01-02T03:04:05+00:00"
+        write_record(memory_path, metadata, body)
         before = self.memory.stats()
         self.assertEqual(set(before["layers"]), {0, 1, 2, 3, 4, 5, 6})
         self.assertEqual(before["canonical_records"], 5)
@@ -294,6 +438,12 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertEqual(result["records"], 5)
         self.assertEqual(result["stats"]["layers"], before["layers"])
         self.assertEqual(result["stats"]["synapses"], before["synapses"])
+        self.assertEqual(
+            self.memory.db.execute(
+                "SELECT created_at FROM neurons WHERE id=?", (metadata["id"],)
+            ).fetchone()[0],
+            metadata["created_at"],
+        )
 
     def test_obsidian_compiler_preserves_user_notes(self):
         seed_demo(self.memory)
@@ -707,12 +857,27 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.0.5")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.2.0")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
             self.assertTrue(awareness["known"])
             self.assertEqual(awareness["next"], "memory_recall")
+            learned = server.call_tool(
+                "memory_recall",
+                {
+                    "query": "Why does the memory system use several layers?",
+                    "learn": True,
+                },
+            )
+            self.assertTrue(learned["reconsolidated"])
+            self.assertGreater(
+                server.memory.db.execute(
+                    "SELECT reactivation_count FROM neurons WHERE id=?",
+                    (learned["cards"][0]["id"],),
+                ).fetchone()[0],
+                0,
+            )
             unknown = server.call_tool(
                 "memory_recall", {"query": "How long should French onion soup bake?"}
             )
