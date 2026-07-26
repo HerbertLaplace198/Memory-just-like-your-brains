@@ -63,7 +63,11 @@ module.exports = class NeuralMemoryReviewPlugin extends Plugin {
               Number(reviews.needs_revision || 0) +
               Number(reviews.rejected || 0) +
               Number(reviews.concepts_confirmed || 0) +
-              Number(reviews.concepts_rejected || 0);
+              Number(reviews.concepts_rejected || 0) +
+              Number(reviews.concepts_merged || 0) +
+              Number(reviews.concepts_kept_distinct || 0) +
+              Number(reviews.families_confirmed || 0) +
+              Number(reviews.families_rejected || 0);
             const errors = reviews.errors || [];
             if (errors.length) {
               new Notice(`Neural Memory review error: ${errors.join("; ")}`, 10000);

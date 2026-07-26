@@ -324,6 +324,21 @@ The other decisions are `merge-left` and `merge-right`. Stable concept
 identities are stored under `vault/concept-identities/`; merge, alias, and
 distinct decisions are stored under `vault/concept-decisions/`.
 
+L3F concept families group three or more related L3 concepts without merging
+them or changing the numbering of L4-L6. Confirmed families collapse their
+members into one Obsidian home-page entry while retaining every topic page.
+Review them in Obsidian or use:
+
+```bash
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
+  concept-family list
+python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
+  concept-family confirm L3F_FAMILY_ID
+```
+
+Use `concept-family reject` to suppress the exact grouping. Family identity
+and review state are stored under `vault/concept-families/`.
+
 Write human notes only inside the `USER-NOTES` block. Synchronize them into review candidates:
 
 ```bash
@@ -354,7 +369,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.2.0/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.3.0/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]

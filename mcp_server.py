@@ -248,7 +248,7 @@ class MCPServer:
             return self._result(request_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "neural-memory", "version": "1.2.0"},
+                "serverInfo": {"name": "neural-memory", "version": "1.3.0"},
             })
         if method == "notifications/initialized":
             return None

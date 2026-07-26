@@ -1,8 +1,19 @@
-# Neural Memory 1.2.0
+# Neural Memory 1.3.0
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.3.0
+
+- Add L3F, a stable concept-family layer that groups three or more related L3
+  concepts without merging them or renumbering L4-L6.
+- Keep L3F outside the neuron layer numbering and store its identity and review
+  state as canonical Markdown under `vault/concept-families/`.
+- Let reviewers confirm or reject proposed families in Obsidian or through the
+  `concept-family` CLI.
+- Collapse confirmed family members into one family entry on the Obsidian home
+  page while retaining every individual L3 topic page.
 
 ## What changed in 1.2.0
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0 - 2026-07-26
+
+- Add the non-renumbering L3F concept-family layer.
+- Group related L3 concepts without merging or deleting them.
+- Preserve stable L3F identity and human decisions through index rebuilds.
+- Add Obsidian family pages, maintenance review, collapsed home navigation, and CLI review.
+- Expand regression coverage to 56 automated tests.
+
 ## 1.2.0 - 2026-07-26
 
 - Add 24-hour startup catch-up consolidation guarded across processes.

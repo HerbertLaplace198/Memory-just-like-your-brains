@@ -40,6 +40,7 @@ MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
 CONCEPT_IDENTITY_FORMAT = "neural-memory-concept-identity/v1"
 CONCEPT_DECISION_FORMAT = "neural-memory-concept-decision/v1"
+CONCEPT_FAMILY_FORMAT = "neural-memory-concept-family/v1"
 CONCEPT_ALIASES = {
     "asset allocation": "Asset Allocation",
     "btc": "Bitcoin",
@@ -99,6 +100,11 @@ CONCEPT_REVIEW_RE = re.compile(
 CONCEPT_DUPLICATE_REVIEW_RE = re.compile(
     r"^\s*- \[[xX]\].*?<!-- concept-duplicate-review:"
     r"(merge-left|merge-right|distinct):(dup_[0-9a-f]+) -->\s*$",
+    re.MULTILINE,
+)
+CONCEPT_FAMILY_REVIEW_RE = re.compile(
+    r"^\s*- \[[xX]\].*?<!-- concept-family-review:"
+    r"(confirm|reject):(l3f_[0-9a-f]+) -->\s*$",
     re.MULTILINE,
 )
 LOCAL_URL_OPENER = build_opener(ProxyHandler({}))
@@ -419,6 +425,7 @@ class NeuralMemory:
         self.semantic_review_dir = self.vault_dir / "semantic-reviews"
         self.concept_identity_dir = self.vault_dir / "concept-identities"
         self.concept_decision_dir = self.vault_dir / "concept-decisions"
+        self.concept_family_dir = self.vault_dir / "concept-families"
         self.rejected_dir = self.vault_dir / ".rejected"
         self.obsidian_dir = self.root / "obsidian-view"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -427,6 +434,7 @@ class NeuralMemory:
         self.semantic_review_dir.mkdir(parents=True, exist_ok=True)
         self.concept_identity_dir.mkdir(parents=True, exist_ok=True)
         self.concept_decision_dir.mkdir(parents=True, exist_ok=True)
+        self.concept_family_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.db_path)
         self.db.row_factory = sqlite3.Row
@@ -631,6 +639,16 @@ class NeuralMemory:
                 decision_id TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS concept_families (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('proposed','confirmed','rejected')),
+                member_keys TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(neurons)")}
@@ -656,6 +674,7 @@ class NeuralMemory:
         self._load_semantic_reviews()
         self._load_concept_identities()
         self._load_concept_decisions()
+        self._load_concept_families()
         self.db.commit()
 
     def _vector(self, row: sqlite3.Row) -> list[float]:
@@ -899,6 +918,49 @@ class NeuralMemory:
                             str(metadata.get("reviewed_at", "")) or now(),
                         ),
                     )
+            loaded += 1
+        return loaded
+
+    def _load_concept_families(self) -> int:
+        """Rebuild the L3F grouping layer from canonical Markdown records."""
+        loaded = 0
+        for path in sorted(self.concept_family_dir.glob("*.md")):
+            metadata, body = read_record(path)
+            if metadata.get("format") != CONCEPT_FAMILY_FORMAT:
+                continue
+            family_id = str(metadata.get("id", ""))
+            status = str(metadata.get("status", "proposed"))
+            if not family_id or status not in {"proposed", "confirmed", "rejected"}:
+                continue
+            member_keys = sorted(
+                str(item) for item in metadata.get("member_keys", []) if str(item)
+            )
+            created_at = str(metadata.get("created_at", "")) or now()
+            updated_at = str(metadata.get("updated_at", "")) or created_at
+            label = str(metadata.get("label", "")) or f"Concept Family {family_id[4:]}"
+            self.db.execute(
+                """INSERT INTO concept_families
+                   (id,label,summary,status,member_keys,active,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     label=excluded.label,
+                     summary=excluded.summary,
+                     status=excluded.status,
+                     member_keys=excluded.member_keys,
+                     active=excluded.active,
+                     created_at=excluded.created_at,
+                     updated_at=excluded.updated_at""",
+                (
+                    family_id,
+                    label,
+                    body.strip(),
+                    status,
+                    json.dumps(member_keys, ensure_ascii=False),
+                    int(bool(metadata.get("active", True))),
+                    created_at,
+                    updated_at,
+                ),
+            )
             loaded += 1
         return loaded
 
@@ -1383,10 +1445,12 @@ class NeuralMemory:
         emergent = self._rebuild_emergent_concepts()
         self._refresh_semantic_stability()
         duplicate_candidates = self._refresh_concept_duplicate_candidates()
+        concept_families = self._refresh_concept_families()
         decayed = self._decay_plastic_synapses(reference) if apply_decay else 0
         return {
             "emergent_concepts": emergent,
             "concept_duplicate_candidates": duplicate_candidates,
+            "concept_families": concept_families,
             "decayed_synapses": decayed,
         }
 
@@ -1781,6 +1845,235 @@ class NeuralMemory:
                SET status='merged',survivor_key=?,reviewed_at=?
                WHERE id=?""",
             (survivor_key, reviewed_at, review_id),
+        )
+        self.db.commit()
+        return True
+
+    def _persist_concept_family(
+        self,
+        family_id: str,
+        member_keys: list[str],
+        status: str,
+        active: bool,
+        label: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        member_keys = sorted(set(member_keys))
+        existing = self.db.execute(
+            "SELECT * FROM concept_families WHERE id=?",
+            (family_id,),
+        ).fetchone()
+        created_at = (
+            created_at
+            or (str(existing["created_at"]) if existing else None)
+            or now()
+        )
+        label = (
+            label
+            or (str(existing["label"]) if existing else None)
+            or f"Concept Family {family_id[4:]}"
+        )
+        members = [
+            self._find_concept_by_key(key)
+            for key in member_keys
+        ]
+        member_labels = [
+            str(row["label"]) for row in members if row is not None
+        ]
+        summary = (
+            f"L3F concept family grouping {len(member_labels)} related L3 concepts: "
+            f"{', '.join(member_labels)}."
+        )
+        updated_at = now()
+        write_record(
+            self.concept_family_dir / f"{family_id}.md",
+            {
+                "format": CONCEPT_FAMILY_FORMAT,
+                "id": family_id,
+                "label": label,
+                "status": status,
+                "member_keys": member_keys,
+                "active": active,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            },
+            summary,
+        )
+        self.db.execute(
+            """INSERT INTO concept_families
+               (id,label,summary,status,member_keys,active,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 label=excluded.label,
+                 summary=excluded.summary,
+                 status=excluded.status,
+                 member_keys=excluded.member_keys,
+                 active=excluded.active,
+                 updated_at=excluded.updated_at""",
+            (
+                family_id,
+                label,
+                summary,
+                status,
+                json.dumps(member_keys, ensure_ascii=False),
+                int(active),
+                created_at,
+                updated_at,
+            ),
+        )
+
+    def _refresh_concept_families(
+        self,
+        min_members: int = 3,
+        similarity_threshold: float = 0.62,
+    ) -> int:
+        """Build a stable L3F grouping layer without merging or renumbering L3."""
+        concepts = self.db.execute(
+            """SELECT * FROM neurons
+               WHERE layer=3 AND status NOT IN ('rejected','archived','stale')
+               ORDER BY label,id"""
+        ).fetchall()
+        existing = self.db.execute(
+            "SELECT * FROM concept_families ORDER BY created_at,id"
+        ).fetchall()
+        self.db.execute("UPDATE concept_families SET active=0")
+        if len(concepts) < min_members:
+            return 0
+
+        profiles = {
+            row["id"]: self._concept_prototype(row)
+            for row in concepts
+        }
+        clusters: list[list[sqlite3.Row]] = []
+        for concept in concepts:
+            vector, members = profiles[concept["id"]]
+            choices: list[tuple[float, int]] = []
+            for index, cluster in enumerate(clusters):
+                similarities: list[float] = []
+                for other in cluster:
+                    other_vector, other_members = profiles[other["id"]]
+                    overlap = len(members & other_members) / max(
+                        1, len(members | other_members)
+                    )
+                    semantic = max(0.0, cosine(vector, other_vector))
+                    similarities.append(0.72 * semantic + 0.28 * overlap)
+                if similarities and min(similarities) >= similarity_threshold:
+                    choices.append((sum(similarities) / len(similarities), index))
+            if choices:
+                _, best = max(choices)
+                clusters[best].append(concept)
+            else:
+                clusters.append([concept])
+
+        groups = [cluster for cluster in clusters if len(cluster) >= min_members]
+        used_ids: set[str] = set()
+        active_count = 0
+        for group in groups:
+            member_keys = sorted(self._concept_key(row) for row in group)
+            member_set = set(member_keys)
+            identity_choices: list[tuple[float, sqlite3.Row]] = []
+            rejected_exact: sqlite3.Row | None = None
+            for candidate in existing:
+                if candidate["id"] in used_ids:
+                    continue
+                old_members = set(json.loads(candidate["member_keys"]))
+                if candidate["status"] == "rejected":
+                    if old_members == member_set:
+                        rejected_exact = candidate
+                    continue
+                overlap = len(member_set & old_members) / max(
+                    1, len(member_set | old_members)
+                )
+                if overlap >= 0.60:
+                    identity_choices.append((overlap, candidate))
+            identity = (
+                rejected_exact
+                or (
+                    max(identity_choices, key=lambda item: item[0])[1]
+                    if identity_choices
+                    else None
+                )
+            )
+            if identity is not None:
+                family_id = str(identity["id"])
+                status = str(identity["status"])
+                if (
+                    status == "confirmed"
+                    and set(json.loads(identity["member_keys"])) != member_set
+                ):
+                    status = "proposed"
+                label = str(identity["label"])
+                created_at = str(identity["created_at"])
+            else:
+                digest = hashlib.sha256(
+                    "|".join(member_keys).encode("utf-8")
+                ).hexdigest()[:10]
+                family_id = f"l3f_{digest}"
+                status = "proposed"
+                label = f"Concept Family {digest}"
+                created_at = now()
+            used_ids.add(family_id)
+            active = status != "rejected"
+            self._persist_concept_family(
+                family_id,
+                member_keys,
+                status,
+                active,
+                label,
+                created_at,
+            )
+            active_count += int(active)
+        return active_count
+
+    def concept_families(
+        self,
+        status: str | None = None,
+        active_only: bool = True,
+    ) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if status is not None:
+            clauses.append("status=?")
+            parameters.append(status)
+        if active_only:
+            clauses.append("active=1")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        result: list[dict[str, object]] = []
+        for row in self.db.execute(
+            f"SELECT * FROM concept_families {where} ORDER BY label,id",
+            parameters,
+        ):
+            item = dict(row)
+            item["member_keys"] = json.loads(str(row["member_keys"]))
+            item["members"] = [
+                {
+                    "id": concept["id"],
+                    "label": concept["label"],
+                }
+                for key in item["member_keys"]
+                if (concept := self._find_concept_by_key(str(key))) is not None
+            ]
+            result.append(item)
+        return result
+
+    @serialized_write
+    def review_concept_family(self, family_id: str, decision: str) -> bool:
+        if decision not in {"confirm", "reject"}:
+            raise ValueError("concept family decision must be confirm or reject")
+        family = self.db.execute(
+            "SELECT * FROM concept_families WHERE id=? AND active=1",
+            (family_id,),
+        ).fetchone()
+        if not family:
+            return False
+        status = "confirmed" if decision == "confirm" else "rejected"
+        self._persist_concept_family(
+            family_id,
+            list(json.loads(family["member_keys"])),
+            status,
+            decision == "confirm",
+            str(family["label"]),
+            str(family["created_at"]),
         )
         self.db.commit()
         return True
@@ -2902,6 +3195,13 @@ class NeuralMemory:
                 "concept_aliases": self.db.execute(
                     "SELECT count(*) FROM concept_aliases"
                 ).fetchone()[0],
+                "active_concept_families": self.db.execute(
+                    "SELECT count(*) FROM concept_families WHERE active=1"
+                ).fetchone()[0],
+                "pending_concept_families": self.db.execute(
+                    """SELECT count(*) FROM concept_families
+                       WHERE active=1 AND status='proposed'"""
+                ).fetchone()[0],
                 "reactivations": self.db.execute(
                     "SELECT coalesce(sum(reactivation_count),0) FROM neurons"
                 ).fetchone()[0],
@@ -2959,9 +3259,11 @@ class NeuralMemory:
         self.db.execute("DELETE FROM concept_identities")
         self.db.execute("DELETE FROM concept_duplicate_reviews")
         self.db.execute("DELETE FROM concept_aliases")
+        self.db.execute("DELETE FROM concept_families")
         self._load_semantic_reviews()
         self._load_concept_identities()
         self._load_concept_decisions()
+        self._load_concept_families()
         for metadata, body in records:
             evidence_path = self.root / str(metadata["evidence_path"])
             if not evidence_path.is_file():
@@ -3082,6 +3384,8 @@ class NeuralMemory:
                 "concepts_rejected": 0,
                 "concepts_merged": 0,
                 "concepts_kept_distinct": 0,
+                "families_confirmed": 0,
+                "families_rejected": 0,
                 "errors": [],
             }
         page_text = page.read_text(encoding="utf-8")
@@ -3094,6 +3398,9 @@ class NeuralMemory:
         duplicate_decisions: dict[str, list[str]] = {}
         for action, review_id in CONCEPT_DUPLICATE_REVIEW_RE.findall(page_text):
             duplicate_decisions.setdefault(review_id, []).append(action)
+        family_decisions: dict[str, list[str]] = {}
+        for action, family_id in CONCEPT_FAMILY_REVIEW_RE.findall(page_text):
+            family_decisions.setdefault(family_id, []).append(action)
         result: dict[str, object] = {
             "confirmed": 0,
             "needs_revision": 0,
@@ -3102,6 +3409,8 @@ class NeuralMemory:
             "concepts_rejected": 0,
             "concepts_merged": 0,
             "concepts_kept_distinct": 0,
+            "families_confirmed": 0,
+            "families_rejected": 0,
             "errors": [],
         }
         errors = result["errors"]
@@ -3157,6 +3466,18 @@ class NeuralMemory:
                 else "concepts_merged"
             )
             result[key] = int(result[key]) + 1
+        for family_id, actions in family_decisions.items():
+            unique_actions = list(dict.fromkeys(actions))
+            if len(unique_actions) != 1:
+                errors.append(
+                    f"{family_id}: select exactly one concept-family review option"
+                )
+                continue
+            action = unique_actions[0]
+            if not self.review_concept_family(family_id, action):
+                continue
+            key = "families_confirmed" if action == "confirm" else "families_rejected"
+            result[key] = int(result[key]) + 1
         self.db.commit()
         return result
 
@@ -3195,6 +3516,8 @@ class NeuralMemory:
         """Compile human-readable views that are explicitly excluded from ingestion."""
         topic_dir = self.obsidian_dir / "topics"
         topic_dir.mkdir(parents=True, exist_ok=True)
+        family_dir = self.obsidian_dir / "families"
+        family_dir.mkdir(parents=True, exist_ok=True)
         relation_dirs = {
             4: self.obsidian_dir / "relations" / "procedures",
             5: self.obsidian_dir / "relations" / "personas",
@@ -3314,6 +3637,36 @@ class NeuralMemory:
             )
             generated.append(page)
 
+        family_generated: list[Path] = []
+        grouped_concept_ids: set[str] = set()
+        for family in self.concept_families():
+            page = family_dir / f"{safe_filename(str(family['label']))}.md"
+            member_lines = "\n".join(
+                f"- [[topics/{safe_filename(str(member['label']))}|{member['label']}]]"
+                for member in family["members"]
+            ) or "- No active member concepts"
+            page.write_text(
+                "---\n"
+                "view_type: compiled-concept-family\n"
+                "layer: L3F\n"
+                "generated: true\n"
+                "do_not_ingest: true\n"
+                f"family_id: {family['id']}\n"
+                f"status: {family['status']}\n"
+                "---\n\n"
+                f"# {family['label']}\n\n"
+                "L3F is a grouping and attention layer. It does not merge its "
+                "member L3 concepts and does not renumber L4-L6.\n\n"
+                "## Member concepts\n\n"
+                f"{member_lines}\n",
+                encoding="utf-8",
+            )
+            family_generated.append(page)
+            if family["status"] == "confirmed":
+                grouped_concept_ids.update(
+                    str(member["id"]) for member in family["members"]
+                )
+
         relation_generated: list[Path] = []
         for relation in relation_nodes:
             page = relation_pages_by_id[relation["id"]]
@@ -3363,6 +3716,19 @@ class NeuralMemory:
                     continue
                 page.unlink()
                 stale_relation_removed += 1
+        stale_family_removed = 0
+        family_generated_paths = {page.resolve() for page in family_generated}
+        for page in sorted(family_dir.glob("*.md")):
+            if page.resolve() in family_generated_paths:
+                continue
+            page_text = page.read_text(encoding="utf-8")
+            if (
+                "view_type: compiled-concept-family" not in page_text
+                or "generated: true" not in page_text
+            ):
+                continue
+            page.unlink()
+            stale_family_removed += 1
         inbox = self.maintenance_inbox()
         proposals = self.annotation_proposals()
         proposed_memories = self.db.execute(
@@ -3447,6 +3813,26 @@ class NeuralMemory:
             if duplicate_sections
             else "- No similar L3 concepts awaiting review"
         )
+        family_sections: list[str] = []
+        for family in self.concept_families(status="proposed"):
+            member_links = "\n".join(
+                f"    - [[topics/{safe_filename(str(member['label']))}|{member['label']}]]"
+                for member in family["members"]
+            )
+            family_sections.append(
+                f"- `{family['id']}` **{family['label']}** "
+                f"(members: {len(family['members'])})\n"
+                f"{member_links}\n"
+                f"  - [ ] Confirm L3F family "
+                f"<!-- concept-family-review:confirm:{family['id']} -->\n"
+                f"  - [ ] Reject this exact grouping "
+                f"<!-- concept-family-review:reject:{family['id']} -->"
+            )
+        family_lines = (
+            "\n".join(family_sections)
+            if family_sections
+            else "- No L3F concept families awaiting review"
+        )
         issue_lines = "\n".join(
             f"- `{item['id']}` **{item['severity']}** {item['kind']}: {item['details']}"
             for item in inbox["issues"]
@@ -3471,6 +3857,8 @@ class NeuralMemory:
             "These L3 candidates were derived from repeated confirmed L1 traces. Confirming preserves the concept and its connections; rejecting records a canonical suppression decision so the same support pattern is not regenerated.\n\n"
             "## Similar L3 merge review\n\n" + duplicate_lines + "\n\n"
             "The system never merges semantic concepts automatically. Merge decisions preserve the stable concept identity, the former name as an alias, and an auditable history. A distinct decision suppresses repeated prompts for the same pair.\n\n"
+            "## L3F concept-family review\n\n" + family_lines + "\n\n"
+            "L3F groups related L3 concepts for navigation and attention without merging them or changing the numbering of L4-L6. Confirmed families collapse their member links on the home page; rejected exact groupings stay suppressed.\n\n"
             "## Human annotation candidates\n\n" + proposal_lines + "\n\n"
             "## System issues\n\n" + issue_lines + "\n\n"
             "## Pending relationships\n\n" + relation_lines + "\n",
@@ -3504,11 +3892,29 @@ class NeuralMemory:
 
         stats = self.stats()
         home = self.obsidian_dir / "00 Home.md"
-        links = "\n".join(f"- [[topics/{path.stem}]]" for path in generated) or "- No topic pages"
+        confirmed_family_names = {
+            safe_filename(str(family["label"]))
+            for family in self.concept_families(status="confirmed")
+        }
+        family_links = "\n".join(
+            f"- [[families/{path.stem}]]"
+            for path in family_generated
+            if path.stem in confirmed_family_names
+        )
+        ungrouped_links = "\n".join(
+            f"- [[topics/{page.stem}]]"
+            for concept_id, page in topic_pages_by_id.items()
+            if concept_id not in grouped_concept_ids
+        )
+        links = "\n".join(
+            item
+            for item in (family_links, ungrouped_links)
+            if item
+        ) or "- No topic or family pages"
         home.write_text(
             "---\nview_type: compiled-memory\ngenerated: true\ndo_not_ingest: true\n---\n\n"
             "# Memory System Home\n\n"
-            "## Topic navigation\n\n"
+            "## L3F family and topic navigation\n\n"
             f"{links}\n- [[98 Archive]]\n- [[99 Maintenance]]\n\n"
             "## System status\n\n"
             f"- L0 raw evidence: {stats['layers'].get(0, 0)}\n"
@@ -3522,12 +3928,13 @@ class NeuralMemory:
             encoding="utf-8",
         )
         return {
-            "pages": len(generated) + len(relation_generated) + 3,
+            "pages": len(generated) + len(family_generated) + len(relation_generated) + 3,
             "root": str(self.obsidian_dir),
             "annotation_sync": sync_result,
             "review_sync": review_sync,
             "stale_topic_pages_removed": stale_removed,
             "stale_relation_pages_removed": stale_relation_removed,
+            "stale_family_pages_removed": stale_family_removed,
         }
 
     def evaluate(self, cases_path: Path, limit: int = 3) -> dict[str, object]:
@@ -3870,6 +4277,9 @@ def parser() -> argparse.ArgumentParser:
         choices=["list", "merge-left", "merge-right", "distinct"],
     )
     concept_duplicate.add_argument("review_id", nargs="?")
+    concept_family = commands.add_parser("concept-family")
+    concept_family.add_argument("action", choices=["list", "confirm", "reject"])
+    concept_family.add_argument("family_id", nargs="?")
     evaluator = commands.add_parser("evaluate")
     evaluator.add_argument("cases", type=Path)
     evaluator.add_argument("--limit", type=int, default=3)
@@ -4056,6 +4466,8 @@ def main(argv: list[str] | None = None) -> int:
                     "concepts_rejected",
                     "concepts_merged",
                     "concepts_kept_distinct",
+                    "families_confirmed",
+                    "families_rejected",
                 )
             )
             should_compile = review_changes > 0 or int(annotation_sync["created"]) > 0
@@ -4113,6 +4525,28 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
                 memory.compile_obsidian()
                 print(f"{args.review_id}: {args.action}")
+        elif args.command == "concept-family":
+            if args.action == "list":
+                print(json.dumps(
+                    memory.concept_families(),
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            else:
+                if not args.family_id:
+                    print("family_id is required", file=sys.stderr)
+                    return 2
+                if not memory.review_concept_family(
+                    args.family_id,
+                    args.action,
+                ):
+                    print(
+                        "concept family not found or already closed",
+                        file=sys.stderr,
+                    )
+                    return 1
+                memory.compile_obsidian()
+                print(f"{args.family_id}: {args.action}")
         elif args.command == "evaluate":
             print(json.dumps(memory.evaluate(args.cases, args.limit), ensure_ascii=False, indent=2))
         elif args.command == "benchmark":

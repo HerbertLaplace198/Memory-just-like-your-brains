@@ -1,10 +1,10 @@
-# Neural Memory 1.2.0 Acceptance Report
+# Neural Memory 1.3.0 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.2.0 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.3.0 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers plus the non-renumbering L3F grouping layer, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.2.0 adds 24-hour startup catch-up consolidation, stable L3 identities, duplicate-concept review, persistent aliases, and durable merge or distinct decisions. It retains the biologically inspired trace stability, retrieval reconsolidation, safe plastic-link decay, and experience-driven L3 emergence introduced in 1.1.0. Canonical L1 memory and evidence never decay or disappear automatically.
+Version 1.3.0 adds stable L3F concept families, human family review, and collapsed Obsidian family navigation without merging L3 or renumbering L4-L6. It retains the 24-hour startup catch-up consolidation, stable L3 identities, duplicate-concept review, persistent aliases, durable merge or distinct decisions, and biologically inspired trace behavior introduced in earlier releases. Canonical L1 memory and evidence never decay or disappear automatically.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -43,11 +43,19 @@ an open-domain quality ceiling.
 
 ## Acceptance record
 
-- 52 automated tests passed, including 24-hour startup catch-up, cross-client serialization, stable L3 identity, duplicate review, rebuild-persistent aliases and distinct decisions, emergent L3 formation, retrieval reconsolidation, and non-destructive decay.
+- 56 automated tests passed, including stable L3F growth, membership-change re-review, confirmed family navigation, rejected-family rebuild suppression, 24-hour startup catch-up, cross-client serialization, stable L3 identity, duplicate review, rebuild-persistent aliases and distinct decisions, emergent L3 formation, retrieval reconsolidation, and non-destructive decay.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
+
+## 1.3.0 regression scope
+
+- Preserve one L3F identity as related L3 membership grows.
+- Keep L3F separate from numbered neuron layers so L4-L6 retain their meaning.
+- Collapse confirmed families in Obsidian navigation while preserving member pages.
+- Suppress rejected exact family groupings after a full index rebuild.
+- Reopen review when the membership of a confirmed family changes.
 
 ## 1.2.0 regression scope
 

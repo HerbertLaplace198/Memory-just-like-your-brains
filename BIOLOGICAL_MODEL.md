@@ -1,6 +1,6 @@
 # Biologically Inspired Memory Model
 
-Neural Memory 1.2.0 uses a biologically inspired architecture while preserving
+Neural Memory 1.3.0 uses a biologically inspired architecture while preserving
 an auditable software boundary. It does not claim to reproduce human
 neuroscience literally.
 
@@ -44,6 +44,17 @@ Stable concept identities prevent a changing support set from creating a new
 L3 on every consolidation. Likely duplicate L3 concepts are shown for review;
 the system never merges them automatically. A human can merge in either
 direction or permanently mark the pair as distinct.
+
+## L3F concept families
+
+L3F is a grouping and attention layer above L3. It is stored separately from
+the numbered neuron layers, so L4-L6 keep their existing meaning. A family
+organizes three or more related L3 concepts but never merges or confirms them.
+
+Families have stable identities and human-governed confirmed or rejected
+states. Confirmed families collapse their members into one Obsidian navigation
+entry while every underlying L3 page remains available. Rejected exact
+groupings remain suppressed across rebuilds.
 
 ## Safety boundary
 

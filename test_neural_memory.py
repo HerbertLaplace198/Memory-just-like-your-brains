@@ -857,7 +857,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.2.0")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.3.0")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )

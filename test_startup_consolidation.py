@@ -190,5 +190,130 @@ class StableConceptIdentityTests(unittest.TestCase):
                 memory.close()
 
 
+class ConceptFamilyLayerTests(unittest.TestCase):
+    @staticmethod
+    def _memory_with_family(root: Path) -> NeuralMemory:
+        memory = NeuralMemory(root, HashEncoder())
+        memory.remember(
+            "A planning case connects portfolio risk, liquidity, and market exposure.",
+            "test",
+            topics=["Portfolio Risk", "Liquidity Planning", "Market Exposure"],
+            confirmed=True,
+        )
+        return memory
+
+    def test_l3f_identity_survives_growth_without_renumbering_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = self._memory_with_family(Path(temporary))
+            try:
+                first = memory.concept_families()
+                self.assertEqual(len(first), 1)
+                family_id = first[0]["id"]
+                self.assertEqual(len(first[0]["members"]), 3)
+
+                memory.remember(
+                    "A second planning case links portfolio risk, liquidity, "
+                    "market exposure, and capital preservation.",
+                    "test",
+                    topics=[
+                        "Portfolio Risk",
+                        "Liquidity Planning",
+                        "Market Exposure",
+                        "Capital Preservation",
+                    ],
+                    confirmed=True,
+                )
+                second = memory.concept_families()
+                self.assertEqual(len(second), 1)
+                self.assertEqual(second[0]["id"], family_id)
+                self.assertEqual(len(second[0]["members"]), 4)
+                self.assertNotIn("3F", memory.stats()["layers"])
+                self.assertTrue(
+                    (memory.concept_family_dir / f"{family_id}.md").is_file()
+                )
+            finally:
+                memory.close()
+
+    def test_confirmed_l3f_collapses_navigation_and_survives_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = self._memory_with_family(Path(temporary))
+            try:
+                family = memory.concept_families()[0]
+                family_id = family["id"]
+                self.assertTrue(memory.review_concept_family(family_id, "confirm"))
+                memory.compile_obsidian()
+
+                family_page = (
+                    memory.obsidian_dir
+                    / "families"
+                    / f"{family['label']}.md"
+                )
+                self.assertTrue(family_page.is_file())
+                self.assertIn(
+                    "layer: L3F",
+                    family_page.read_text(encoding="utf-8"),
+                )
+                home = (memory.obsidian_dir / "00 Home.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn(f"[[families/{family['label']}]]", home)
+                self.assertNotIn("[[topics/Portfolio Risk]]", home)
+
+                memory.rebuild_index()
+                rebuilt = memory.concept_families(status="confirmed")
+                self.assertEqual([item["id"] for item in rebuilt], [family_id])
+            finally:
+                memory.close()
+
+    def test_rejected_l3f_grouping_is_suppressed_after_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = self._memory_with_family(Path(temporary))
+            try:
+                family_id = memory.concept_families()[0]["id"]
+                memory.compile_obsidian()
+                maintenance = memory.obsidian_dir / "99 Maintenance.md"
+                text = maintenance.read_text(encoding="utf-8")
+                marker = (
+                    f"- [ ] Reject this exact grouping "
+                    f"<!-- concept-family-review:reject:{family_id} -->"
+                )
+                self.assertIn(marker, text)
+                maintenance.write_text(
+                    text.replace(marker, marker.replace("[ ]", "[x]")),
+                    encoding="utf-8",
+                )
+
+                result = memory.sync_obsidian_reviews()
+                self.assertEqual(result["families_rejected"], 1)
+                self.assertFalse(memory.concept_families())
+                memory.rebuild_index()
+                self.assertFalse(memory.concept_families())
+            finally:
+                memory.close()
+
+    def test_confirmed_family_reopens_review_when_membership_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = self._memory_with_family(Path(temporary))
+            try:
+                family_id = memory.concept_families()[0]["id"]
+                self.assertTrue(memory.review_concept_family(family_id, "confirm"))
+                memory.remember(
+                    "A new case adds capital preservation to the same planning family.",
+                    "test",
+                    topics=[
+                        "Portfolio Risk",
+                        "Liquidity Planning",
+                        "Market Exposure",
+                        "Capital Preservation",
+                    ],
+                    confirmed=True,
+                )
+                reopened = memory.concept_families(status="proposed")
+                self.assertEqual([item["id"] for item in reopened], [family_id])
+                self.assertEqual(len(reopened[0]["members"]), 4)
+            finally:
+                memory.close()
+
+
 if __name__ == "__main__":
     unittest.main()
