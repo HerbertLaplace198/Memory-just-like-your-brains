@@ -2029,6 +2029,7 @@ class NeuralMemory:
         self,
         status: str | None = None,
         active_only: bool = True,
+        include_relations: bool = True,
     ) -> list[dict[str, object]]:
         clauses: list[str] = []
         parameters: list[object] = []
@@ -2053,8 +2054,146 @@ class NeuralMemory:
                 for key in item["member_keys"]
                 if (concept := self._find_concept_by_key(str(key))) is not None
             ]
+            item["shared_relations"] = (
+                self._family_shared_relations(
+                    [str(member["id"]) for member in item["members"]]
+                )
+                if include_relations
+                else []
+            )
             result.append(item)
         return result
+
+    def _family_shared_relations(
+        self,
+        concept_ids: list[str],
+    ) -> list[dict[str, object]]:
+        """Return L4/L5 relations used by at least two members of one L3F."""
+        support: dict[str, set[str]] = {}
+        rows_by_id: dict[str, sqlite3.Row] = {}
+        for concept_id in concept_ids:
+            rows = self.db.execute(
+                """WITH RECURSIVE upper(id,layer,depth) AS (
+                       SELECT id,layer,0 FROM neurons WHERE id=?
+                       UNION
+                       SELECT n.id,n.layer,u.depth+1
+                       FROM upper u
+                       JOIN synapses s ON s.source_id=u.id
+                       JOIN neurons n ON n.id=s.target_id
+                       WHERE n.layer>u.layer AND n.layer<=5 AND u.depth<3
+                   )
+                   SELECT DISTINCT n.* FROM upper u
+                   JOIN neurons n ON n.id=u.id
+                   WHERE n.layer BETWEEN 4 AND 5
+                     AND n.status NOT IN ('rejected','archived','stale')""",
+                (concept_id,),
+            ).fetchall()
+            for row in rows:
+                rows_by_id[row["id"]] = row
+                support.setdefault(str(row["id"]), set()).add(concept_id)
+        return [
+            {
+                "id": relation_id,
+                "layer": int(rows_by_id[relation_id]["layer"]),
+                "label": str(rows_by_id[relation_id]["label"]),
+                "member_count": len(member_ids),
+            }
+            for relation_id, member_ids in sorted(
+                support.items(),
+                key=lambda item: (
+                    int(rows_by_id[item[0]]["layer"]),
+                    str(rows_by_id[item[0]]["label"]),
+                ),
+            )
+            if len(member_ids) >= 2
+        ]
+
+    def concept_family_routes(
+        self,
+        query: str,
+        limit: int = 2,
+    ) -> dict[str, object]:
+        """Select confirmed L3F routes, or explicitly fall back to global L3."""
+        families = self.concept_families(
+            status="confirmed",
+            include_relations=False,
+        )
+        if not families:
+            return {
+                "used": False,
+                "has_confirmed_families": False,
+                "reason": "no_confirmed_families",
+                "families": [],
+                "selected_concept_ids": [],
+            }
+        query_vector = self._encode(query)
+        query_terms = set(features(query))
+        scored: list[tuple[float, dict[str, object]]] = []
+        for family in families:
+            member_labels = " ".join(
+                str(member["label"]) for member in family["members"]
+            )
+            representation = self._encode(
+                f"{family['label']} {family['summary']} {member_labels}"
+            )
+            semantic = max(0.0, cosine(query_vector, representation))
+            family_terms = set(
+                features(
+                    f"{family['label']} {family['summary']} {member_labels}"
+                )
+            )
+            lexical = (
+                len(query_terms & family_terms) / len(query_terms)
+                if query_terms
+                else 0.0
+            )
+            score = 0.75 * semantic + 0.25 * lexical
+            scored.append((score, family))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        threshold = 0.23 if isinstance(self.encoder, HashEncoder) else 0.50
+        peak = scored[0][0]
+        if peak < threshold:
+            return {
+                "used": False,
+                "has_confirmed_families": True,
+                "reason": "family_gate_closed",
+                "peak": round(peak, 6),
+                "families": [],
+                "selected_concept_ids": [],
+            }
+        selected = [
+            (score, family)
+            for score, family in scored[: max(1, limit)]
+            if score >= threshold and score >= peak - 0.08
+        ]
+        selected_concept_ids = list(
+            dict.fromkeys(
+                str(member["id"])
+                for _, family in selected
+                for member in family["members"]
+            )
+        )
+        return {
+            "used": bool(selected_concept_ids),
+            "has_confirmed_families": True,
+            "reason": "confirmed_family_match",
+            "peak": round(peak, 6),
+            "families": [
+                {
+                    "id": family["id"],
+                    "label": family["label"],
+                    "activation": round(score, 6),
+                    "member_concept_ids": [
+                        str(member["id"]) for member in family["members"]
+                    ],
+                    "shared_relations": self._family_shared_relations(
+                        [str(member["id"]) for member in family["members"]]
+                    ),
+                }
+                for score, family in selected
+            ],
+            "selected_concept_ids": selected_concept_ids,
+        }
 
     @serialized_write
     def review_concept_family(self, family_id: str, decision: str) -> bool:
@@ -2580,12 +2719,41 @@ class NeuralMemory:
         winners: int = 7,
         rounds: int = 2,
         spread: float = 0.52,
+        use_family_routing: bool = True,
     ) -> list[ActivatedNeuron]:
         query_vector = self._encode(query)
         query_features = set(features(query))
+        family_routing = (
+            self.concept_family_routes(query)
+            if use_family_routing
+            else {
+                "used": False,
+                "has_confirmed_families": False,
+                "selected_concept_ids": [],
+            }
+        )
         rows = self.db.execute(
             "SELECT * FROM neurons WHERE status NOT IN ('rejected','stale','archived')"
         ).fetchall()
+        if use_family_routing and family_routing["has_confirmed_families"]:
+            grouped_concept_ids = {
+                str(member["id"])
+                for family in self.concept_families(
+                    status="confirmed",
+                    include_relations=False,
+                )
+                for member in family["members"]
+            }
+            selected_concept_ids = set(
+                str(item) for item in family_routing["selected_concept_ids"]
+            )
+            rows = [
+                row
+                for row in rows
+                if row["layer"] != 3
+                or row["id"] not in grouped_concept_ids
+                or row["id"] in selected_concept_ids
+            ]
         direct: dict[str, float] = {}
         components: dict[str, dict[str, float]] = {}
         row_map = {row["id"]: row for row in rows}
@@ -2706,33 +2874,63 @@ class NeuralMemory:
             )
         return result
 
+    def _recall_gate_score(
+        self,
+        activated: list[ActivatedNeuron],
+    ) -> float:
+        l1 = [item for item in activated if item.layer == 1]
+        if isinstance(self.encoder, HashEncoder):
+            return l1[0].activation if l1 else 0.0
+        supported_semantic = max(
+            (
+                item.vector_score
+                for item in l1
+                if item.bm25_score > 0.0 or item.lexical_score > 0.0
+            ),
+            default=0.0,
+        )
+        semantic_only = max((item.vector_score for item in l1), default=0.0)
+        # A semantic-only match needs a margin above the configured gate.
+        # This preserves genuine paraphrases while rejecting isolated model
+        # similarities that have no lexical support in the active corpus.
+        return max(supported_semantic, semantic_only - 0.15)
+
     def probe(self, query: str) -> tuple[bool, float, list[ActivatedNeuron]]:
         activated = self.activate(query)
-        l1 = [item for item in activated if item.layer == 1]
+        gate_score = self._recall_gate_score(activated)
         threshold = float(getattr(self.encoder, "gate_threshold", 0.06))
-        if isinstance(self.encoder, HashEncoder):
-            gate_score = l1[0].activation if l1 else 0.0
-        else:
-            supported_semantic = max(
-                (
-                    item.vector_score
-                    for item in l1
-                    if item.bm25_score > 0.0 or item.lexical_score > 0.0
-                ),
-                default=0.0,
+        family_routing = self.concept_family_routes(query)
+        l3_route_peak = max(
+            (
+                item.direct_activation
+                for item in activated
+                if item.layer == 3
+            ),
+            default=0.0,
+        )
+        l3_route_threshold = (
+            0.18 if isinstance(self.encoder, HashEncoder) else 0.35
+        )
+        if (
+            family_routing["has_confirmed_families"]
+            and not family_routing["used"]
+            and (
+                gate_score < threshold
+                or l3_route_peak < l3_route_threshold
             )
-            semantic_only = max((item.vector_score for item in l1), default=0.0)
-            # A semantic-only match needs a margin above the configured gate.
-            # This preserves genuine paraphrases while rejecting isolated model
-            # similarities that have no lexical support in the active corpus.
-            gate_score = max(supported_semantic, semantic_only - 0.15)
+        ):
+            fallback = self.activate(query, use_family_routing=False)
+            fallback_score = self._recall_gate_score(fallback)
+            if fallback_score > gate_score:
+                activated = fallback
+                gate_score = fallback_score
         return gate_score >= threshold, gate_score, activated
 
     def _topic_memory_ids(
         self, activated: list[ActivatedNeuron], query: str = ""
     ) -> set[str]:
-        """Return L1 memories attached to the strongest active L3 route."""
-        routes = sorted(
+        """Return L1 memories through L3F-selected L3 routes with safe fallback."""
+        all_routes = sorted(
             [
                 (item.id, item.label, item.direct_activation)
                 for item in activated
@@ -2740,16 +2938,55 @@ class NeuralMemory:
             ],
             key=lambda route: route[2],
             reverse=True,
-        )[:1]
+        )
+        family_routing = self.concept_family_routes(query)
+        selected_family_concepts = set(
+            str(item) for item in family_routing["selected_concept_ids"]
+        )
+        family_routes = [
+            route for route in all_routes if route[0] in selected_family_concepts
+        ]
+        if family_routing["used"] and family_routes:
+            family_peak = family_routes[0][2]
+            routes = [
+                route for route in family_routes[:2]
+                if route[2] >= family_peak * 0.80
+            ]
+            confirmed_member_ids = {
+                str(member["id"])
+                for family in self.concept_families(
+                    status="confirmed",
+                    include_relations=False,
+                )
+                for member in family["members"]
+            }
+            independent_routes = [
+                route for route in all_routes
+                if route[0] not in confirmed_member_ids
+            ]
+            if independent_routes:
+                independent = independent_routes[0]
+                floor = 0.10 if isinstance(self.encoder, HashEncoder) else 0.20
+                if independent[2] >= max(floor, family_peak * 0.60):
+                    routes.append(independent)
+        else:
+            routes = all_routes
         if not routes:
             return set()
-        route_id, route_label, _ = routes[0]
-        route_ids = [route_id]
+        peak = routes[0][2]
+        if not family_routing["used"]:
+            routes = [
+                route for route in routes[:2]
+                if route[2] >= peak * 0.80
+            ]
+        route_ids = [route[0] for route in routes]
         if any(token in query.casefold() for token in ("continue", "resume")):
-            parent_label = TOPIC_PARENTS.get(route_label)
-            parent = self._find_named(3, parent_label) if parent_label else None
-            if parent and parent["status"] not in {"rejected", "stale", "archived"}:
-                route_ids.append(parent["id"])
+            for _, route_label, _ in routes:
+                parent_label = TOPIC_PARENTS.get(route_label)
+                parent = self._find_named(3, parent_label) if parent_label else None
+                if parent and parent["status"] not in {"rejected", "stale", "archived"}:
+                    route_ids.append(parent["id"])
+        route_ids = list(dict.fromkeys(route_ids))
         placeholders = ",".join("?" for _ in route_ids)
         rows = self.db.execute(
             f"""SELECT s.source_id AS route_id, s.target_id AS memory_id
@@ -2767,7 +3004,7 @@ class NeuralMemory:
         limit: int = 5,
         reconsolidate: bool = False,
     ) -> list[ActivatedNeuron]:
-        activated = self.activate(query)
+        _, _, activated = self.probe(query)
         cards = [item for item in activated if item.layer == 1]
         topic_memory_ids = self._topic_memory_ids(activated, query)
         if topic_memory_ids:
@@ -3645,6 +3882,13 @@ class NeuralMemory:
                 f"- [[topics/{safe_filename(str(member['label']))}|{member['label']}]]"
                 for member in family["members"]
             ) or "- No active member concepts"
+            shared_relation_lines = "\n".join(
+                f"- L{relation['layer']} "
+                f"[[{relation_pages_by_id[relation['id']].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{relation['label']}]] "
+                f"(shared by {relation['member_count']} member concepts)"
+                for relation in family["shared_relations"]
+                if relation["id"] in relation_pages_by_id
+            ) or "- No L4/L5 relationship is shared by multiple members"
             page.write_text(
                 "---\n"
                 "view_type: compiled-concept-family\n"
@@ -3658,7 +3902,9 @@ class NeuralMemory:
                 "L3F is a grouping and attention layer. It does not merge its "
                 "member L3 concepts and does not renumber L4-L6.\n\n"
                 "## Member concepts\n\n"
-                f"{member_lines}\n",
+                f"{member_lines}\n\n"
+                "## Shared upper-layer relationships\n\n"
+                f"{shared_relation_lines}\n",
                 encoding="utf-8",
             )
             family_generated.append(page)
@@ -4367,6 +4613,7 @@ def main(argv: list[str] | None = None) -> int:
                 "known": known,
                 "peak_l1_activation": round(peak, 4),
                 "encoder": memory.stats()["encoder"],
+                "l3f_routing": memory.concept_family_routes(args.query),
                 "formula": "retention * governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
                 "activations": [
                     {

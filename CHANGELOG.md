@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 - 2026-07-26
+
+- Promote confirmed L3F families into the first-stage semantic router.
+- Search matched family members and independent L3 concepts together.
+- Suppress individual competition from unselected family members.
+- Add a full-L3 safety fallback when family and independent routes are weak.
+- Aggregate shared L4/L5 family relationships and expose L3F routing in MCP.
+- Expand regression coverage to 58 automated tests.
+
 ## 1.3.0 - 2026-07-26
 
 - Add the non-renumbering L3F concept-family layer.

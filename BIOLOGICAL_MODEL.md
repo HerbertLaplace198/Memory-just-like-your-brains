@@ -56,6 +56,14 @@ states. Confirmed families collapse their members into one Obsidian navigation
 entry while every underlying L3 page remains available. Rejected exact
 groupings remain suppressed across rebuilds.
 
+Confirmed L3F families also replace their members during coarse semantic
+competition. The first pass compares family representatives with independent
+L3 concepts. A matched family then expands its member L3 concepts while the
+independent L3 candidates remain searchable. Members of other, unselected
+families stay represented by their own L3F instead of competing individually.
+If neither a family nor an independent concept supplies a safe route, retrieval
+falls back to the complete L3 set.
+
 ## Safety boundary
 
 - Automatic abstraction never confirms itself.

@@ -134,9 +134,15 @@ class MCPServer:
         if name == "memory_awareness":
             query = self._required_text(arguments, "query")
             known, peak, activated = self.memory.probe(query)
+            family_routing = self.memory.concept_family_routes(query)
             return {
                 "known": known,
                 "peak_l1_activation": round(peak, 4),
+                "l3f_routing": {
+                    "used": family_routing["used"],
+                    "reason": family_routing["reason"],
+                    "families": family_routing["families"],
+                },
                 "active_routes": [
                     {
                         "layer": item.layer,
@@ -183,9 +189,11 @@ class MCPServer:
             query = self._required_text(arguments, "query")
             limit = max(1, min(10, int(arguments.get("limit", 7))))
             known, peak, activated = self.memory.probe(query)
+            family_routing = self.memory.concept_family_routes(query)
             return {
                 "known": known,
                 "peak_l1_activation": round(peak, 4),
+                "l3f_routing": family_routing,
                 "formula": "retention * governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
                 "activations": [
                     {
@@ -248,7 +256,7 @@ class MCPServer:
             return self._result(request_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "neural-memory", "version": "1.3.0"},
+                "serverInfo": {"name": "neural-memory", "version": "1.4.0"},
             })
         if method == "notifications/initialized":
             return None

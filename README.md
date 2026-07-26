@@ -1,8 +1,22 @@
-# Neural Memory 1.3.0
+# Neural Memory 1.4.0
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
+
+## What changed in 1.4.0
+
+- Make confirmed L3F families participate in first-stage semantic routing
+  instead of serving only as navigation pages.
+- Search family representatives and independent L3 concepts together. A
+  matched family expands its member L3 concepts while independent L3 remains
+  eligible.
+- Keep members of unselected families out of first-stage competition because
+  their family representative stands in for them.
+- Fall back to full L3 search when neither a family nor an independent L3
+  provides a safe route.
+- Aggregate L4/L5 relationships shared by multiple family members and expose
+  the routing decision through MCP and `explain`.
 
 ## What changed in 1.3.0
 

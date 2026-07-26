@@ -5,6 +5,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from mcp_server import MCPServer
 from neural_memory import HashEncoder, NeuralMemory
@@ -198,6 +199,7 @@ class ConceptFamilyLayerTests(unittest.TestCase):
             "A planning case connects portfolio risk, liquidity, and market exposure.",
             "test",
             topics=["Portfolio Risk", "Liquidity Planning", "Market Exposure"],
+            procedures=["Risk Review"],
             confirmed=True,
         )
         return memory
@@ -253,6 +255,10 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                     "layer: L3F",
                     family_page.read_text(encoding="utf-8"),
                 )
+                self.assertIn(
+                    "Risk Review",
+                    family_page.read_text(encoding="utf-8"),
+                )
                 home = (memory.obsidian_dir / "00 Home.md").read_text(
                     encoding="utf-8"
                 )
@@ -262,6 +268,93 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                 memory.rebuild_index()
                 rebuilt = memory.concept_families(status="confirmed")
                 self.assertEqual([item["id"] for item in rebuilt], [family_id])
+            finally:
+                memory.close()
+
+    @staticmethod
+    def _memory_with_two_families(root: Path) -> NeuralMemory:
+        memory = NeuralMemory(root, HashEncoder())
+        memory.remember(
+            "Portfolio liquidity downside planning evidence.",
+            "test",
+            topics=["Portfolio Risk", "Liquidity Planning", "Market Exposure"],
+            confirmed=True,
+        )
+        memory.remember(
+            "Writing collaboration review workflow evidence.",
+            "test",
+            topics=["Writing Workflow", "Review Practice", "Collaboration Style"],
+            confirmed=True,
+        )
+        memory.remember(
+            "Astronomy telescope observation notes.",
+            "test",
+            topics=["Astronomy"],
+            confirmed=True,
+        )
+        for family in memory.concept_families():
+            memory.review_concept_family(str(family["id"]), "confirm")
+        return memory
+
+    def test_l3f_hit_expands_family_and_keeps_independent_l3_search(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = self._memory_with_two_families(Path(temporary))
+            try:
+                routing = memory.concept_family_routes(
+                    "portfolio liquidity astronomy"
+                )
+                self.assertTrue(routing["used"])
+                active_l3 = {
+                    item.label
+                    for item in memory.activate(
+                        "portfolio liquidity astronomy",
+                        winners=100,
+                    )
+                    if item.layer == 3
+                }
+                self.assertIn("Portfolio Risk", active_l3)
+                self.assertIn("Liquidity Planning", active_l3)
+                self.assertIn("Astronomy", active_l3)
+                self.assertNotIn("Writing Workflow", active_l3)
+                self.assertNotIn("Review Practice", active_l3)
+                recalled = {
+                    item.summary
+                    for item in memory.recall(
+                        "portfolio liquidity astronomy",
+                        limit=5,
+                    )
+                }
+                self.assertTrue(any("Portfolio" in item for item in recalled))
+                self.assertTrue(any("Astronomy" in item for item in recalled))
+            finally:
+                memory.close()
+
+    def test_closed_family_gate_can_fall_back_to_full_l3(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = self._memory_with_two_families(Path(temporary))
+            try:
+                forced_closed = {
+                    "used": False,
+                    "has_confirmed_families": True,
+                    "reason": "family_gate_closed",
+                    "families": [],
+                    "selected_concept_ids": [],
+                }
+                with patch.object(
+                    memory,
+                    "concept_family_routes",
+                    return_value=forced_closed,
+                ):
+                    known, _, activated = memory.probe("writing workflow")
+                self.assertTrue(known)
+                self.assertIn(
+                    "Writing Workflow",
+                    {
+                        item.label
+                        for item in activated
+                        if item.layer == 3
+                    },
+                )
             finally:
                 memory.close()
 

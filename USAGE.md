@@ -339,6 +339,13 @@ python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
 Use `concept-family reject` to suppress the exact grouping. Family identity
 and review state are stored under `vault/concept-families/`.
 
+After confirmation, L3F participates in retrieval. The coarse pass compares
+family representatives with independent L3 concepts. A matched family expands
+its own member L3 concepts while independent L3 remains searchable; members of
+other families continue to be represented by their family. If no family or
+independent L3 supplies a safe route, Neural Memory falls back to full L3
+search. Inspect the decision with `explain` or the MCP `l3f_routing` field.
+
 Write human notes only inside the `USER-NOTES` block. Synchronize them into review candidates:
 
 ```bash
@@ -369,7 +376,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.3.0/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.4.0/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]
