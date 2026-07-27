@@ -1,4 +1,4 @@
-# Neural Memory 1.5.1
+# Neural Memory 1.5.2
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
@@ -6,6 +6,9 @@ For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
 
 ## Current maintenance updates
 
+- Restrict all retrieval and long-term weighting to confirmed records. Proposed
+  memories remain visible in the review workflow but cannot be injected,
+  reconsolidated, or used to strengthen concept and family routing.
 - Store canonical governance records under the hidden `<root>/.neural-memory/`
   directory: semantic reviews, concept identities, duplicate decisions, and
   L3F family records. Keep `vault/` for human-auditable memories and evidence;

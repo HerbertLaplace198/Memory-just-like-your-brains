@@ -1531,11 +1531,11 @@ class NeuralMemory:
                        SELECT id,layer FROM neurons WHERE id=?
                        UNION
                        SELECT n.id,n.layer
-                       FROM downward d
-                       JOIN synapses s ON s.source_id=d.id
-                       JOIN neurons n ON n.id=s.target_id
-                       WHERE n.layer<d.layer
-                         AND n.status NOT IN ('rejected','archived','stale')
+                FROM downward d
+                JOIN synapses s ON s.source_id=d.id
+                JOIN neurons n ON n.id=s.target_id
+                WHERE n.layer<d.layer
+                         AND n.status='confirmed'
                    )
                    SELECT
                      count(DISTINCT CASE WHEN layer=1 THEN id END) AS atoms,
@@ -2366,7 +2366,7 @@ class NeuralMemory:
         support_ids: set[str] = set()
         for member_id in member_ids:
             for row in self._related_atoms(member_id):
-                if row["status"] not in {"rejected", "archived", "stale"}:
+                if row["status"] == "confirmed":
                     support_ids.add(str(row["id"]))
 
         member_signal = 1.0 - math.exp(
@@ -3063,7 +3063,7 @@ class NeuralMemory:
             }
         )
         rows = self.db.execute(
-            "SELECT * FROM neurons WHERE status NOT IN ('rejected','stale','archived')"
+            "SELECT * FROM neurons WHERE status='confirmed'"
         ).fetchall()
         if use_family_routing and family_routing["has_confirmed_families"]:
             grouped_concept_ids = {
@@ -3300,7 +3300,7 @@ class NeuralMemory:
             for _, route_label, _ in routes:
                 parent_label = TOPIC_PARENTS.get(route_label)
                 parent = self._find_named(3, parent_label) if parent_label else None
-                if parent and parent["status"] not in {"rejected", "stale", "archived"}:
+                if parent and parent["status"] == "confirmed":
                     route_ids.append(parent["id"])
         route_ids = list(dict.fromkeys(route_ids))
         placeholders = ",".join("?" for _ in route_ids)
@@ -3309,7 +3309,7 @@ class NeuralMemory:
                 FROM synapses s JOIN neurons n ON n.id=s.target_id
                 WHERE s.source_id IN ({placeholders})
                   AND s.relation='member_of' AND n.layer=1
-                  AND n.status NOT IN ('rejected','stale','archived')""",
+                  AND n.status='confirmed'""",
             tuple(route_ids),
         ).fetchall()
         return {row["memory_id"] for row in rows}

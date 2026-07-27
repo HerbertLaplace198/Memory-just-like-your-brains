@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.2 - 2026-07-27
+
+- Restrict awareness, recall, reconsolidation, semantic stability, and L3F
+  family-support weighting to confirmed records.
+- Keep proposed memories and upper-layer candidates visible for review without
+  allowing them to influence retrieval or long-term structure.
+- Add regression coverage for the core retrieval, MCP, stability, and L3F
+  candidate-isolation boundary.
+
 ## 1.5.1 - 2026-07-27
 
 - Prefer existing L3 topic matches when indexing new memories, retaining all

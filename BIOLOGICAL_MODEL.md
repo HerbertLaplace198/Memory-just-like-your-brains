@@ -68,6 +68,8 @@ falls back to the complete L3 set.
 
 - Automatic abstraction never confirms itself.
 - Proposed and rejected memories do not support emergent concepts.
+- Only confirmed records participate in awareness, recall, reconsolidation,
+  semantic stability, and L3F family-support weighting.
 - Consolidation never rewrites or deletes L1 evidence.
 - SQLite and Obsidian remain rebuildable views.
 - Human-reviewed Markdown remains authoritative.

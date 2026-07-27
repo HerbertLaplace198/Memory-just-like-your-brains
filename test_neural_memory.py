@@ -101,6 +101,56 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertTrue(self.memory.review(neuron_id, "confirmed"))
         self.assertNotIn(neuron_id, {row["id"] for row in self.memory.proposed()})
 
+    def test_proposed_memories_do_not_enter_retrieval_or_reinforcement(self):
+        neuron_id = self.memory.remember(
+            "An unreviewed constraint must never be injected into task context.",
+            "test",
+            topics=["Memory Governance"],
+        )
+
+        known, _, _ = self.memory.probe(
+            "Which unreviewed constraint belongs in task context?"
+        )
+        cards = self.memory.recall(
+            "Which unreviewed constraint belongs in task context?",
+            reconsolidate=True,
+        )
+        state = self.memory.db.execute(
+            "SELECT reactivation_count,last_reactivated FROM neurons WHERE id=?",
+            (neuron_id,),
+        ).fetchone()
+
+        self.assertFalse(known)
+        self.assertEqual(cards, [])
+        self.assertEqual(state["reactivation_count"], 0)
+        self.assertIsNone(state["last_reactivated"])
+
+    def test_proposed_memory_does_not_raise_concept_stability(self):
+        self.memory.remember(
+            "Confirmed evidence establishes the governance concept.",
+            "test",
+            topics=["Memory Governance"],
+            confirmed=True,
+        )
+        concept = self.memory._find_named(3, "Memory Governance")
+        self.assertIsNotNone(concept)
+        self.memory._refresh_semantic_stability()
+        before = self.memory.db.execute(
+            "SELECT stability FROM neurons WHERE id=?", (concept["id"],)
+        ).fetchone()[0]
+
+        self.memory.remember(
+            "Unreviewed evidence must not strengthen the governance concept.",
+            "test",
+            topics=["Memory Governance"],
+        )
+        self.memory._refresh_semantic_stability()
+        after = self.memory.db.execute(
+            "SELECT stability FROM neurons WHERE id=?", (concept["id"],)
+        ).fetchone()[0]
+
+        self.assertEqual(after, before)
+
     def test_reject_prunes_orphan_l3_l4_nodes_and_synapses(self):
         rejected = self.memory.remember(
             "A temporary preference.",
@@ -978,7 +1028,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.1")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.2")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
@@ -1014,6 +1064,12 @@ class NeuralMemoryTests(unittest.TestCase):
             self.assertEqual(proposed["status"], "proposed")
             self.assertEqual(row["status"], "proposed")
             self.assertTrue(proposed["obsidian_view_refreshed"])
+            proposed_recall = server.call_tool(
+                "memory_recall",
+                {"query": "What new constraint requires user review?"},
+            )
+            self.assertFalse(proposed_recall["known"])
+            self.assertEqual(proposed_recall["cards"], [])
             topic_page = server.memory.obsidian_dir / "主题" / "Memory Governance.md"
             self.assertIn(proposed["id"], topic_page.read_text(encoding="utf-8"))
         finally:

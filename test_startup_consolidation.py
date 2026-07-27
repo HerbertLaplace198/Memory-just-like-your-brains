@@ -388,10 +388,11 @@ class ConceptFamilyLayerTests(unittest.TestCase):
 
                 def support(member_id: str) -> list[dict[str, str]]:
                     count = 1 if member_id.startswith("small") else 10
-                    return [
+                    confirmed = [
                         {"id": f"{member_id}-l1-{index}", "status": "confirmed"}
                         for index in range(count)
                     ]
+                    return confirmed + [{"id": f"{member_id}-candidate", "status": "proposed"}]
 
                 with patch.object(
                     memory,
