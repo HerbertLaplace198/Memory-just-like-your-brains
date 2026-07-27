@@ -1,10 +1,15 @@
-# Neural Memory 1.5.0 Acceptance Report
+# Neural Memory 1.5.1 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.5.0 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers plus the non-renumbering L3F grouping and routing layer, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.5.1 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers plus the non-renumbering L3F grouping and routing layer, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
 Version 1.5.0 keeps confirmed L3F families in coarse semantic routing and gives larger confirmed families a bounded route bonus based on member L3 breadth and unique active L1 support. The family relevance gate remains primary; member L3 scores are unchanged. Family representatives compete alongside independent L3 concepts; a matched family expands its members while the remaining independent L3 stays searchable. Unselected families remain represented by L3F, with full-L3 fallback when no safe route exists. Shared L4/L5 relations are aggregated at family level. Canonical L1 memory and evidence never decay or disappear automatically.
+
+Version 1.5.1 adds topic-first indexing: new memories reuse all strong existing
+L3 matches, preserve legitimate multi-topic membership, and only retain an
+unmatched explicit topic as a new candidate. Experience-driven L3 emergence
+remains available through consolidation and human review.
 
 The v1.4.0 tag remains unchanged. Existing v1.4 memory stores and encoder
 configurations are accepted without migration; an omitted family-size setting

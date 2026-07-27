@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1 - 2026-07-27
+
+- Prefer existing L3 topic matches when indexing new memories, retaining all
+  strong matches so one L1 can belong to multiple topics.
+- Allow genuinely unmatched explicit topic hints to create new candidates
+  without recreating topics already connected to the memory.
+- Preserve experience-driven L3 emergence from clusters of confirmed L1 traces.
+
 ## 1.5.0 - 2026-07-27
 
 - Give larger confirmed L3F families a bounded routing bonus based on member

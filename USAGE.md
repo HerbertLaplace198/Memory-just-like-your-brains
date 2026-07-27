@@ -136,6 +136,15 @@ Layer mapping:
 | `--procedure` | L4 | Workflow or SOP |
 
 New L3 topic, L2 episode, L4 procedure, L5 schema, and L6 domain labels are English-only. Non-English labels are rejected before any canonical evidence is written; known Chinese aliases are normalized to English. The memory body itself may use any language. Rebuilding an older store skips legacy non-English structural labels. When an L1 memory is rejected, any L3/L4 nodes and synapses that are no longer reachable from another active L1 are pruned automatically.
+
+When a new memory is written, explicit topic labels are treated as hints. The
+index first compares them and the memory body with active L3 topics, reuses all
+strong matches, and preserves multiple matches when one memory belongs to more
+than one topic. A hint that does not match an existing topic may still create
+a new topic through the normal proposed/confirmed lifecycle; matched topics
+are never recreated as duplicates. A memory without a topic hint remains an
+L1 trace until consolidation finds a repeated pattern across other confirmed
+L1 traces and proposes an emergent L3 concept.
 | `--schema` | L5 | Stable preference or model |
 | `--domain` | L6 | High-level awareness route |
 
@@ -391,7 +400,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.5.0/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.5.1/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]

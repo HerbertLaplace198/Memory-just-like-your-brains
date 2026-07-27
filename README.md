@@ -1,4 +1,4 @@
-# Neural Memory 1.5.0
+# Neural Memory 1.5.1
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
@@ -42,6 +42,13 @@ For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
   saturating member/L1 support bonus capped by `family_size_bonus_cap` (default
   `0.08`). The family relevance gate remains primary, and L3 member scores are
   unchanged.
+- Route each new L1 memory through existing L3 topics before accepting new
+  labels. Multiple strong existing matches are retained, while genuinely new
+  explicit topic hints may still create proposed L3 candidates without
+  duplicating the matched topics.
+- Keep topic formation experience-driven: confirmed L1 traces without a shared
+  topic can still consolidate into a proposed emergent L3, which remains under
+  human review.
 
 ## What changed in 1.3.0
 

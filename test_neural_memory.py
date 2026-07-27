@@ -44,6 +44,33 @@ class FailingEncoder:
         return [1.0] * (7 if "Token" in text else self.dimensions)
 
 
+class MultiTopicEncoder:
+    """Tiny semantic space used to verify multi-topic routing deterministically."""
+
+    name = "test-multi-topic-v1"
+    dimensions = 4
+    gate_threshold = 0.06
+    family_gate_threshold = 0.23
+    topic_match_threshold = 0.50
+
+    def encode(self, text):
+        lowered = text.casefold()
+        vector = [0.0] * self.dimensions
+        if any(token in lowered for token in ("research", "method", "study")):
+            vector[0] = 1.0
+        if any(token in lowered for token in ("writing", "workflow", "paper")):
+            vector[1] = 1.0
+        if "investment" in lowered or "portfolio" in lowered:
+            vector[2] = 1.0
+        if not any(vector):
+            vector[3] = 1.0
+        norm = sum(value * value for value in vector) ** 0.5 or 1.0
+        return [value / norm for value in vector]
+
+    def encode_many(self, texts):
+        return [self.encode(text) for text in texts]
+
+
 class NeuralMemoryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -523,6 +550,98 @@ class NeuralMemoryTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(count, 1)
 
+    def test_new_memory_reuses_multiple_relevant_existing_topics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), MultiTopicEncoder())
+            try:
+                memory.remember(
+                    "Research methods guide study design.",
+                    "test",
+                    topics=["Research Methods"],
+                    confirmed=True,
+                )
+                memory.remember(
+                    "The writing workflow prepares the paper.",
+                    "test",
+                    topics=["Writing Workflow"],
+                    confirmed=True,
+                )
+                linked = memory.remember(
+                    "Research methods should guide the writing workflow for a paper.",
+                    "test",
+                )
+
+                labels = {
+                    row["label"]
+                    for row in memory.db.execute(
+                        """SELECT n.label FROM synapses s JOIN neurons n ON n.id=s.target_id
+                           WHERE s.source_id=? AND s.relation='member_of' AND n.layer=3""",
+                        (linked,),
+                    )
+                }
+                self.assertEqual(labels, {"Research Methods", "Writing Workflow"})
+                self.assertEqual(
+                    memory.db.execute(
+                        "SELECT count(*) FROM neurons WHERE layer=3"
+                    ).fetchone()[0],
+                    2,
+                )
+
+                mixed = memory.remember(
+                    "Research methods also inform investment portfolio decisions.",
+                    "test",
+                    topics=["Research Methods", "Investment"],
+                )
+                mixed_labels = {
+                    row["label"]
+                    for row in memory.db.execute(
+                        """SELECT n.label FROM synapses s JOIN neurons n ON n.id=s.target_id
+                           WHERE s.source_id=? AND s.relation='member_of' AND n.layer=3""",
+                        (mixed,),
+                    )
+                }
+                self.assertEqual(mixed_labels, {"Research Methods", "Investment"})
+                self.assertEqual(
+                    memory.db.execute(
+                        "SELECT count(*) FROM neurons WHERE layer=3"
+                    ).fetchone()[0],
+                    3,
+                )
+            finally:
+                memory.close()
+
+    def test_semantically_equivalent_topic_hint_reuses_existing_l3(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), MultiTopicEncoder())
+            try:
+                memory.remember(
+                    "Research methods guide study design.",
+                    "test",
+                    topics=["Research Methods"],
+                    confirmed=True,
+                )
+                linked = memory.remember(
+                    "Study method findings belong to the same research area.",
+                    "test",
+                    topics=["Study Method"],
+                )
+                labels = {
+                    row["label"]
+                    for row in memory.db.execute(
+                        """SELECT n.label FROM synapses s JOIN neurons n ON n.id=s.target_id
+                           WHERE s.source_id=? AND s.relation='member_of' AND n.layer=3""",
+                        (linked,),
+                    )
+                }
+                self.assertEqual(labels, {"Research Methods"})
+                self.assertIsNone(
+                    memory.db.execute(
+                        "SELECT id FROM neurons WHERE layer=3 AND label='Study Method'"
+                    ).fetchone()
+                )
+            finally:
+                memory.close()
+
     def test_confirmed_memory_upgrades_but_never_downgrades_topic_status(self):
         proposed = self.memory.remember(
             "Proposed memory system rule.", "test", topics=["memory"]
@@ -859,7 +978,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.0")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.1")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )

@@ -44,6 +44,9 @@ CONCEPT_FAMILY_FORMAT = "neural-memory-concept-family/v1"
 L3F_SIZE_BONUS_CAP = 0.08
 L3F_MEMBER_SIZE_SCALE = 4.0
 L3F_SUPPORT_SIZE_SCALE = 12.0
+L3_TOPIC_MATCH_MARGIN = 0.12
+L3_TOPIC_MATCH_THRESHOLD_HASH = 0.52
+L3_TOPIC_MATCH_THRESHOLD_SEMANTIC = 0.68
 CONCEPT_ALIASES = {
     "asset allocation": "Asset Allocation",
     "btc": "Bitcoin",
@@ -1040,6 +1043,121 @@ class NeuralMemory:
             "SELECT * FROM neurons WHERE layer=? AND lower(label)=lower(?) AND status!='rejected'",
             (layer, label),
         ).fetchone()
+
+    @staticmethod
+    def _topic_terms(text: str) -> set[str]:
+        return {
+            term
+            for term in re.findall(r"[a-z0-9]+", text.casefold())
+            if len(term) > 1
+        }
+
+    def _topic_match_threshold(self) -> float:
+        configured = getattr(self.encoder, "topic_match_threshold", None)
+        if configured is not None:
+            return max(0.0, min(1.0, float(configured)))
+        if isinstance(self.encoder, HashEncoder):
+            return L3_TOPIC_MATCH_THRESHOLD_HASH
+        return L3_TOPIC_MATCH_THRESHOLD_SEMANTIC
+
+    def _rank_topic_matches(
+        self,
+        query: str,
+        concepts: list[sqlite3.Row],
+    ) -> list[tuple[float, sqlite3.Row]]:
+        """Rank active L3 topics against one memory or topic hint.
+
+        A memory may have several strong topic routes.  Keep all close
+        matches instead of forcing the memory into a single best topic.
+        """
+        if not query.strip() or not concepts:
+            return []
+        query_vector = self._encode(query)
+        query_terms = self._topic_terms(query)
+        scored: list[tuple[float, sqlite3.Row]] = []
+        for concept in concepts:
+            prototype, _ = self._concept_prototype(concept)
+            content_score = max(0.0, cosine(query_vector, prototype))
+            representation_score = max(
+                0.0,
+                cosine(query_vector, self._vector(concept)),
+            )
+            label_terms = self._topic_terms(str(concept["label"]))
+            lexical_score = (
+                len(query_terms & label_terms) / len(label_terms)
+                if label_terms
+                else 0.0
+            )
+            score = (
+                0.55 * content_score
+                + 0.30 * representation_score
+                + 0.15 * lexical_score
+            )
+            scored.append((score, concept))
+        scored.sort(key=lambda item: (item[0], str(item[1]["label"])), reverse=True)
+        threshold = self._topic_match_threshold()
+        eligible = [item for item in scored if item[0] >= threshold]
+        if not eligible:
+            return []
+        best = eligible[0][0]
+        margin = getattr(self.encoder, "topic_match_margin", L3_TOPIC_MATCH_MARGIN)
+        margin = max(0.0, min(1.0, float(margin)))
+        return [item for item in eligible if item[0] >= best - margin]
+
+    def _resolve_memory_topics(
+        self,
+        text: str,
+        requested_topics: Iterable[str] = (),
+    ) -> list[str]:
+        """Reuse relevant L3 topics before accepting new topic labels.
+
+        Explicit topic labels are hints, not permission to create a duplicate
+        L3.  Existing topics are matched both from those hints and from the
+        memory text, and every strong match is retained because one memory can
+        legitimately belong to multiple topics.  Explicit hints that do not
+        match any existing topic remain as new candidates, while matched hints
+        are replaced by the existing canonical labels.  A memory without a
+        topic hint remains uncategorized until consolidation can form an
+        emergent candidate.
+        """
+        requested = [
+            self._resolve_concept_alias(label)
+            for label in canonical_concepts(list(requested_topics))
+        ]
+        requested = list(dict.fromkeys(label for label in requested if label.strip()))
+        concepts = self.db.execute(
+            """SELECT * FROM neurons
+               WHERE layer=3 AND status NOT IN ('rejected','archived','stale')
+               ORDER BY label,id"""
+        ).fetchall()
+        if not concepts:
+            return requested
+
+        matched: dict[str, sqlite3.Row] = {}
+        unmatched_requested: list[str] = []
+        for label in requested:
+            exact = self._find_named(3, label)
+            if exact:
+                matched[str(exact["id"])] = exact
+            hint_matches = self._rank_topic_matches(label, concepts)
+            for _, concept in hint_matches:
+                matched[str(concept["id"])] = concept
+            if not exact and not hint_matches:
+                unmatched_requested.append(label)
+
+        for _, concept in self._rank_topic_matches(text, concepts):
+            matched[str(concept["id"])] = concept
+
+        existing_labels = list(
+            dict.fromkeys(str(concept["label"]) for concept in matched.values())
+        )
+        if not existing_labels:
+            return requested
+
+        # Preserve genuinely new explicit aspects, but never carry forward a
+        # hint that already matched an existing topic.  This allows one memory
+        # to extend its topic set without recreating the topics it already has.
+        return list(dict.fromkeys(existing_labels + unmatched_requested))
 
     def _create_neuron(
         self,
@@ -2431,12 +2549,14 @@ class NeuralMemory:
         supersedes: Iterable[str] = (),
         conflicts: Iterable[str] = (),
     ) -> str:
-        concept_labels = [
-            self._resolve_concept_alias(label)
-            for label in require_english_labels(
-                canonical_concepts(list(topics)), "topics"
-            )
-        ]
+        requested_topics = require_english_labels(
+            canonical_concepts(list(topics)), "topics"
+        )
+        if not requested_topics and any(
+            token in source.casefold() for token in ("skill", "tool")
+        ):
+            requested_topics = ["Tools"]
+        concept_labels = self._resolve_memory_topics(text, requested_topics)
         procedure_labels = require_english_labels(procedures, "procedures")
         persona_labels = require_english_labels(schemas, "schemas")
         episode_labels = require_english_labels(
@@ -2550,14 +2670,14 @@ class NeuralMemory:
 
         upper_status = status if status in {"confirmed", "proposed", "archived"} else "proposed"
         current_ids = [neuron_id]
-        concept_labels = [
-            self._resolve_concept_alias(label)
-            for label in english_only_labels(
-                canonical_concepts([str(x) for x in record.get("concepts", [])])
-            )
-        ]
-        if not concept_labels and any(token in source.casefold() for token in ("skill", "tool")):
-            concept_labels = ["Tools"]
+        requested_topics = english_only_labels(
+            canonical_concepts([str(x) for x in record.get("concepts", [])])
+        )
+        if not requested_topics and any(
+            token in source.casefold() for token in ("skill", "tool")
+        ):
+            requested_topics = ["Tools"]
+        concept_labels = self._resolve_memory_topics(text, requested_topics)
         level_specs: list[tuple[int, list[str], str, str]] = [
             (2, [str(record.get("episode", ""))], "episode", "情景记忆"),
             (3, concept_labels, "member_of", "语义概念"),
