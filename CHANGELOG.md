@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 - 2026-07-27
 
+- Give larger confirmed L3F families a bounded routing bonus based on member
+  L3 count and unique active L1 support; keep the family relevance gate and
+  member L3 scoring unchanged.
 - Move semantic review, concept identity, duplicate-decision, and L3F family
   records into hidden `<root>/.neural-memory/` backend storage.
 - Require English structural labels for new memory writes while preserving the
@@ -9,6 +12,10 @@
   indexing.
 - Improve multilingual L3F triggering with canonical English aliases and add
   the separately calibrated `family_gate_threshold` setting.
+- Preserve compatibility with v1.4 encoder configurations: omitted
+  `family_size_bonus_cap` defaults to `0.08`, and existing memory stores need
+  no migration.
+- Expand regression coverage to 62 automated tests.
 
 ## 1.4.0 - 2026-07-26
 

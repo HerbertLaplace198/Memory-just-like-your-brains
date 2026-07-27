@@ -350,6 +350,17 @@ The L3F threshold is separate from the L1 awareness threshold. Configure it as
 `family_gate_threshold` in the encoder JSON; recalibrate it with representative
 positive family queries and unrelated negative queries when the corpus changes.
 
+Once the family gate opens, route competition uses the base family score plus a
+bounded `family_size_bonus_cap` (default `0.08`). The bonus grows with the
+number of member L3 concepts and unique active L1 support, with diminishing
+returns. Confirmation remains a hard requirement, and this bonus only chooses
+the L3F route; member L3 scoring remains `0.45 vector + 0.45 BM25 + 0.10
+lexical`.
+
+Existing v1.4 memory stores and encoder configurations remain compatible. If
+an older encoder JSON omits `family_size_bonus_cap`, Neural Memory uses `0.08`;
+no Markdown or SQLite migration is required.
+
 Write human notes only inside the `USER-NOTES` block. Synchronize them into review candidates:
 
 ```bash
@@ -380,7 +391,7 @@ Copy `mcp.json.example` and replace both absolute paths:
     "neural-memory": {
       "command": "python3",
       "args": [
-        "/ABSOLUTE/PATH/neural-memory-1.4.0/mcp_server.py",
+        "/ABSOLUTE/PATH/neural-memory-1.5.0/mcp_server.py",
         "--root",
         "/ABSOLUTE/PATH/my-neural-memory"
       ]

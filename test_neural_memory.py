@@ -14,6 +14,7 @@ from neural_memory import (
     LocalHTTPEncoder,
     NeuralMemory,
     import_bundle,
+    load_encoder_config,
     main,
     read_record,
     seed_demo,
@@ -858,7 +859,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.4.0")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.0")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
@@ -1052,6 +1053,19 @@ class NeuralMemoryTests(unittest.TestCase):
                 "remote-model",
                 768,
             )
+
+    def test_v14_encoder_config_defaults_new_family_bonus(self):
+        config = Path(self.temp.name) / "legacy-encoder.json"
+        config.write_text(
+            json.dumps({
+                "provider": "hash",
+                "dimensions": 1024,
+                "gate_threshold": 0.48,
+            }),
+            encoding="utf-8",
+        )
+        encoder = load_encoder_config(config)
+        self.assertEqual(encoder.family_size_bonus_cap, 0.08)
 
     def test_local_http_encoder_parses_supported_responses(self):
         class Response:

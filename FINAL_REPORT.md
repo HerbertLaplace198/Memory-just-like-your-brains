@@ -1,10 +1,14 @@
-# Neural Memory 1.4.0 Acceptance Report
+# Neural Memory 1.5.0 Acceptance Report
 
 ## Conclusion
 
-Neural Memory 1.4.0 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers plus the non-renumbering L3F grouping and routing layer, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
+Neural Memory 1.5.0 is a standalone, reproducible, and auditable local memory system. It implements L0-L6 memory layers plus the non-renumbering L3F grouping and routing layer, three-stage progressive retrieval, human review, conflict and expiry governance, Obsidian views, MCP, lifecycle hooks, cross-process protection, atomic backup and restore, and real local neural embeddings.
 
-Version 1.4.0 promotes confirmed L3F families into coarse semantic routing. Family representatives compete alongside independent L3 concepts; a matched family expands its members while the remaining independent L3 stays searchable. Unselected families remain represented by L3F, with full-L3 fallback when no safe route exists. Shared L4/L5 relations are aggregated at family level. Canonical L1 memory and evidence never decay or disappear automatically.
+Version 1.5.0 keeps confirmed L3F families in coarse semantic routing and gives larger confirmed families a bounded route bonus based on member L3 breadth and unique active L1 support. The family relevance gate remains primary; member L3 scores are unchanged. Family representatives compete alongside independent L3 concepts; a matched family expands its members while the remaining independent L3 stays searchable. Unselected families remain represented by L3F, with full-L3 fallback when no safe route exists. Shared L4/L5 relations are aggregated at family level. Canonical L1 memory and evidence never decay or disappear automatically.
+
+The v1.4.0 tag remains unchanged. Existing v1.4 memory stores and encoder
+configurations are accepted without migration; an omitted family-size setting
+uses the v1.5.0 default cap of `0.08`.
 
 The reference neural encoder is `qwen3-embedding:0.6b` through Ollama on `127.0.0.1`. The configured vector size is 1024.
 
@@ -43,14 +47,16 @@ an open-domain quality ceiling.
 
 ## Acceptance record
 
-- 58 automated tests passed, including simultaneous family-member and independent-L3 search, full-L3 safety fallback, shared L4/L5 aggregation, stable L3F growth, membership-change re-review, confirmed family navigation, rejected-family rebuild suppression, 24-hour startup catch-up, cross-client serialization, stable L3 identity, duplicate review, retrieval reconsolidation, and non-destructive decay.
+- 62 automated tests passed, including bounded L3F family-size routing, v1.4 encoder-config compatibility, simultaneous family-member and independent-L3 search, full-L3 safety fallback, shared L4/L5 aggregation, stable L3F growth, membership-change re-review, confirmed family navigation, rejected-family rebuild suppression, 24-hour startup catch-up, cross-client serialization, stable L3 identity, duplicate review, retrieval reconsolidation, and non-destructive decay.
 - Eight independent concurrent writers were verified.
 - Tampered bundle detection and restore rejection were verified.
 - Export, bundle verification, staged restore, and post-restore health checks were verified.
 - Ollama 0.32.1 and `qwen3-embedding:0.6b` were used for the local neural evaluation.
 
-## 1.4.0 regression scope
+## 1.5.0 regression scope
 
+- Give larger confirmed families more route authority without allowing size to bypass the relevance gate.
+- Keep the family-size bonus capped and leave member L3 scoring unchanged.
 - Expand a matched family while continuing to search independent L3 concepts.
 - Keep unselected family members represented by their own L3F.
 - Fall back to full L3 when family and independent routes are weak.

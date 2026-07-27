@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -364,6 +365,128 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                 }
                 self.assertTrue(any("Portfolio" in item for item in recalled))
                 self.assertTrue(any("Astronomy" in item for item in recalled))
+            finally:
+                memory.close()
+
+    def test_l3f_size_bonus_grows_with_breadth_and_support_but_is_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), HashEncoder())
+            try:
+                small = {
+                    "members": [
+                        {"id": "small-1"},
+                        {"id": "small-2"},
+                        {"id": "small-3"},
+                    ]
+                }
+                large = {
+                    "members": [
+                        {"id": f"large-{index}"}
+                        for index in range(1, 7)
+                    ]
+                }
+
+                def support(member_id: str) -> list[dict[str, str]]:
+                    count = 1 if member_id.startswith("small") else 10
+                    return [
+                        {"id": f"{member_id}-l1-{index}", "status": "confirmed"}
+                        for index in range(count)
+                    ]
+
+                with patch.object(
+                    memory,
+                    "_related_atoms",
+                    side_effect=lambda member_id: support(member_id),
+                ):
+                    small_profile = memory._family_size_profile(small)
+                    large_profile = memory._family_size_profile(large)
+
+                self.assertEqual(small_profile["member_count"], 3)
+                self.assertEqual(small_profile["l1_support_count"], 3)
+                self.assertEqual(large_profile["member_count"], 6)
+                self.assertEqual(large_profile["l1_support_count"], 60)
+                self.assertGreater(
+                    float(large_profile["size_bonus"]),
+                    float(small_profile["size_bonus"]),
+                )
+                self.assertLessEqual(float(large_profile["size_bonus"]), 0.08)
+            finally:
+                memory.close()
+
+    def test_larger_family_can_win_close_route_competition_without_changing_l3_scores(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), HashEncoder())
+            try:
+                small = {
+                    "id": "l3f-small",
+                    "label": "Small family",
+                    "summary": "Small family",
+                    "status": "confirmed",
+                    "members": [
+                        {"id": "small-1", "label": "Small one"},
+                        {"id": "small-2", "label": "Small two"},
+                        {"id": "small-3", "label": "Small three"},
+                    ],
+                }
+                large = {
+                    "id": "l3f-large",
+                    "label": "Large family",
+                    "summary": "Large family",
+                    "status": "confirmed",
+                    "members": [
+                        {"id": f"large-{index}", "label": f"Large {index}"}
+                        for index in range(1, 7)
+                    ],
+                }
+
+                def fake_encode(text: str) -> list[float]:
+                    if "Large family" in text:
+                        semantic = 0.87
+                    elif "Small family" in text:
+                        semantic = 0.90
+                    else:
+                        semantic = 1.0
+                    return [semantic, math.sqrt(max(0.0, 1.0 - semantic**2))]
+
+                def support(member_id: str) -> list[dict[str, str]]:
+                    count = 1 if member_id.startswith("small") else 10
+                    return [
+                        {"id": f"{member_id}-l1-{index}", "status": "confirmed"}
+                        for index in range(count)
+                    ]
+
+                with (
+                    patch.object(
+                        memory,
+                        "concept_families",
+                        return_value=[large, small],
+                    ),
+                    patch.object(
+                        memory,
+                        "_family_display_name",
+                        side_effect=lambda family: str(family["label"]),
+                    ),
+                    patch.object(
+                        memory,
+                        "_related_atoms",
+                        side_effect=support,
+                    ),
+                    patch.object(memory, "_encode", side_effect=fake_encode),
+                ):
+                    routing = memory.concept_family_routes("target phrase", limit=2)
+
+                self.assertTrue(routing["used"])
+                self.assertEqual(routing["families"][0]["id"], "l3f-large")
+                self.assertEqual(routing["families"][1]["id"], "l3f-small")
+                self.assertLess(
+                    routing["families"][0]["base_score"],
+                    routing["families"][1]["base_score"],
+                )
+                self.assertGreater(
+                    routing["families"][0]["activation"],
+                    routing["families"][1]["activation"],
+                )
+                self.assertLessEqual(routing["families"][0]["size_bonus"], 0.08)
             finally:
                 memory.close()
 

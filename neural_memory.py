@@ -41,6 +41,9 @@ SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
 CONCEPT_IDENTITY_FORMAT = "neural-memory-concept-identity/v1"
 CONCEPT_DECISION_FORMAT = "neural-memory-concept-decision/v1"
 CONCEPT_FAMILY_FORMAT = "neural-memory-concept-family/v1"
+L3F_SIZE_BONUS_CAP = 0.08
+L3F_MEMBER_SIZE_SCALE = 4.0
+L3F_SUPPORT_SIZE_SCALE = 12.0
 CONCEPT_ALIASES = {
     "asset allocation": "Asset Allocation",
     "btc": "Bitcoin",
@@ -205,6 +208,7 @@ class TextEncoder(Protocol):
     dimensions: int
     gate_threshold: float
     family_gate_threshold: float
+    family_size_bonus_cap: float
 
     def encode(self, text: str) -> list[float]: ...
 
@@ -217,10 +221,19 @@ class HashEncoder:
     name = "feature-hash-v1"
     gate_threshold = 0.48
     family_gate_threshold = 0.23
+    family_size_bonus_cap = L3F_SIZE_BONUS_CAP
 
-    def __init__(self, dimensions: int = VECTOR_DIMS, gate_threshold: float = 0.48):
+    def __init__(
+        self,
+        dimensions: int = VECTOR_DIMS,
+        gate_threshold: float = 0.48,
+        family_size_bonus_cap: float = L3F_SIZE_BONUS_CAP,
+    ):
+        if not 0.0 <= family_size_bonus_cap <= 0.20:
+            raise ValueError("family size bonus cap must be between 0 and 0.20")
         self.dimensions = dimensions
         self.gate_threshold = gate_threshold
+        self.family_size_bonus_cap = family_size_bonus_cap
 
     def encode(self, text: str) -> list[float]:
         return encode(text, self.dimensions)
@@ -241,6 +254,7 @@ class LocalHTTPEncoder:
         timeout: float = 30.0,
         gate_threshold: float = 0.30,
         family_gate_threshold: float = 0.42,
+        family_size_bonus_cap: float = L3F_SIZE_BONUS_CAP,
     ):
         parsed = urlparse(endpoint)
         if parsed.scheme not in ("http", "https") or parsed.hostname not in (
@@ -253,6 +267,8 @@ class LocalHTTPEncoder:
             raise ValueError(f"unsupported local encoder provider: {provider}")
         if dimensions <= 0:
             raise ValueError("encoder dimensions must be positive")
+        if not 0.0 <= family_size_bonus_cap <= 0.20:
+            raise ValueError("family size bonus cap must be between 0 and 0.20")
         self.provider = provider
         self.endpoint = endpoint
         self.model = model
@@ -260,6 +276,7 @@ class LocalHTTPEncoder:
         self.timeout = timeout
         self.gate_threshold = gate_threshold
         self.family_gate_threshold = family_gate_threshold
+        self.family_size_bonus_cap = family_size_bonus_cap
         self.name = f"{provider}:{model}"
 
     def encode(self, text: str) -> list[float]:
@@ -294,6 +311,7 @@ def load_encoder_config(path: Path) -> TextEncoder:
         return HashEncoder(
             int(config.get("dimensions", VECTOR_DIMS)),
             float(config.get("gate_threshold", 0.48)),
+            float(config.get("family_size_bonus_cap", L3F_SIZE_BONUS_CAP)),
         )
     return LocalHTTPEncoder(
         provider,
@@ -303,6 +321,7 @@ def load_encoder_config(path: Path) -> TextEncoder:
         float(config.get("timeout", 30.0)),
         float(config.get("gate_threshold", 0.30)),
         float(config.get("family_gate_threshold", 0.42)),
+        float(config.get("family_size_bonus_cap", L3F_SIZE_BONUS_CAP)),
     )
 
 
@@ -2219,6 +2238,36 @@ class NeuralMemory:
             if len(member_ids) >= 2
         ]
 
+    def _family_size_profile(self, family: dict[str, object]) -> dict[str, object]:
+        """Return a bounded route bonus from family breadth and evidence depth."""
+        member_ids = [
+            str(member["id"])
+            for member in family.get("members", [])
+            if isinstance(member, dict) and member.get("id")
+        ]
+        support_ids: set[str] = set()
+        for member_id in member_ids:
+            for row in self._related_atoms(member_id):
+                if row["status"] not in {"rejected", "archived", "stale"}:
+                    support_ids.add(str(row["id"]))
+
+        member_signal = 1.0 - math.exp(
+            -len(member_ids) / L3F_MEMBER_SIZE_SCALE
+        )
+        support_signal = 1.0 - math.exp(
+            -len(support_ids) / L3F_SUPPORT_SIZE_SCALE
+        )
+        size_signal = 0.60 * member_signal + 0.40 * support_signal
+        configured_cap = float(
+            getattr(self.encoder, "family_size_bonus_cap", L3F_SIZE_BONUS_CAP)
+        )
+        cap = min(0.20, max(0.0, configured_cap))
+        return {
+            "member_count": len(member_ids),
+            "l1_support_count": len(support_ids),
+            "size_bonus": cap * size_signal,
+        }
+
     def concept_family_routes(
         self,
         query: str,
@@ -2240,7 +2289,7 @@ class NeuralMemory:
         routing_query = enrich_query_with_known_concepts(query)
         query_vector = self._encode(routing_query)
         query_terms = set(features(routing_query))
-        scored: list[tuple[float, dict[str, object]]] = []
+        scored: list[dict[str, object]] = []
         for family in families:
             member_labels = " ".join(
                 str(member["label"]) for member in family["members"]
@@ -2260,52 +2309,86 @@ class NeuralMemory:
                 if query_terms
                 else 0.0
             )
-            score = 0.75 * semantic + 0.25 * lexical
-            scored.append((score, family))
-        scored.sort(key=lambda item: item[0], reverse=True)
+            base_score = 0.75 * semantic + 0.25 * lexical
+            profile = self._family_size_profile(family)
+            routing_score = base_score + float(profile["size_bonus"])
+            scored.append(
+                {
+                    "family": family,
+                    "base_score": base_score,
+                    "routing_score": routing_score,
+                    **profile,
+                }
+            )
+        scored.sort(
+            key=lambda item: float(item["routing_score"]),
+            reverse=True,
+        )
         threshold = float(
             getattr(self.encoder, "family_gate_threshold", 0.23)
         )
-        peak = scored[0][0]
-        if peak < threshold:
+        base_peak = max(float(item["base_score"]) for item in scored)
+        routing_peak = float(scored[0]["routing_score"])
+        if base_peak < threshold:
             return {
                 "used": False,
                 "has_confirmed_families": True,
                 "reason": "family_gate_closed",
-                "peak": round(peak, 6),
+                "peak": round(base_peak, 6),
+                "routing_peak": round(routing_peak, 6),
                 "families": [],
                 "selected_concept_ids": [],
             }
+        eligible = [
+            item
+            for item in scored
+            if float(item["base_score"]) >= threshold
+        ]
+        eligible.sort(
+            key=lambda item: float(item["routing_score"]),
+            reverse=True,
+        )
+        routing_peak = float(eligible[0]["routing_score"])
         selected = [
-            (score, family)
-            for score, family in scored[: max(1, limit)]
-            if score >= threshold and score >= peak - 0.08
+            item
+            for item in eligible[: max(1, limit)]
+            if float(item["routing_score"]) >= routing_peak - 0.08
         ]
         selected_concept_ids = list(
             dict.fromkeys(
                 str(member["id"])
-                for _, family in selected
-                for member in family["members"]
+                for item in selected
+                for member in item["family"]["members"]
             )
         )
         return {
             "used": bool(selected_concept_ids),
             "has_confirmed_families": True,
             "reason": "confirmed_family_match",
-            "peak": round(peak, 6),
+            "peak": round(base_peak, 6),
+            "routing_peak": round(routing_peak, 6),
             "families": [
                 {
-                    "id": family["id"],
-                    "label": self._family_display_name(family),
-                    "activation": round(score, 6),
+                    "id": item["family"]["id"],
+                    "label": self._family_display_name(item["family"]),
+                    "status": "confirmed",
+                    "activation": round(float(item["routing_score"]), 6),
+                    "base_score": round(float(item["base_score"]), 6),
+                    "size_bonus": round(float(item["size_bonus"]), 6),
+                    "member_count": int(item["member_count"]),
+                    "l1_support_count": int(item["l1_support_count"]),
                     "member_concept_ids": [
-                        str(member["id"]) for member in family["members"]
+                        str(member["id"])
+                        for member in item["family"]["members"]
                     ],
                     "shared_relations": self._family_shared_relations(
-                        [str(member["id"]) for member in family["members"]]
+                        [
+                            str(member["id"])
+                            for member in item["family"]["members"]
+                        ]
                     ),
                 }
-                for score, family in selected
+                for item in selected
             ],
             "selected_concept_ids": selected_concept_ids,
         }
@@ -3511,6 +3594,13 @@ class NeuralMemory:
                 "gate_threshold": float(getattr(self.encoder, "gate_threshold", 0.06)),
                 "family_gate_threshold": float(
                     getattr(self.encoder, "family_gate_threshold", 0.23)
+                ),
+                "family_size_bonus_cap": float(
+                    getattr(
+                        self.encoder,
+                        "family_size_bonus_cap",
+                        L3F_SIZE_BONUS_CAP,
+                    )
                 ),
             },
             "layers": layers,

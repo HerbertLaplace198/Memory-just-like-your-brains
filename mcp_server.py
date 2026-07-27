@@ -197,6 +197,11 @@ class MCPServer:
                 "peak_l1_activation": round(peak, 4),
                 "l3f_routing": family_routing,
                 "formula": "retention × governance × (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
+                "l3f_formula": (
+                    "confirmed family route = 0.75 semantic + 0.25 lexical; "
+                    "the gate uses this base score, then adds a bounded size "
+                    "bonus from member L3 count and unique active L1 support"
+                ),
                 "activations": [
                     {
                         "id": item.id,
@@ -258,7 +263,7 @@ class MCPServer:
             return self._result(request_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "neural-memory", "version": "1.4.0"},
+                "serverInfo": {"name": "neural-memory", "version": "1.5.0"},
             })
         if method == "notifications/initialized":
             return None

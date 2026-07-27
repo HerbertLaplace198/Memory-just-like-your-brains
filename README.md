@@ -1,4 +1,4 @@
-# Neural Memory 1.4.0
+# Neural Memory 1.5.0
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
@@ -18,6 +18,9 @@ For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
 - Enrich multilingual family queries with known English concept aliases and
   use a separate configurable `family_gate_threshold`; the live Qwen
   configuration is calibrated at `0.42` for L3F routing.
+- After the family gate opens, give larger confirmed families a bounded route
+  bonus based on member L3 count and unique active L1 support. The default cap
+  is `0.08`; L3 member scoring is unchanged.
 
 ## What changed in 1.4.0
 
@@ -32,6 +35,13 @@ For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
   provides a safe route.
 - Aggregate L4/L5 relationships shared by multiple family members and expose
   the routing decision through MCP and `explain`.
+
+## Unreleased
+
+- Give larger confirmed L3F families slightly more routing authority using a
+  saturating member/L1 support bonus capped by `family_size_bonus_cap` (default
+  `0.08`). The family relevance gate remains primary, and L3 member scores are
+  unchanged.
 
 ## What changed in 1.3.0
 
