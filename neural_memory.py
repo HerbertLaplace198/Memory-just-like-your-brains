@@ -35,6 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
+SOFTWARE_VERSION = "1.5.4"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
@@ -3741,7 +3742,8 @@ class NeuralMemory:
 
     @serialized_write
     def scan_maintenance(self) -> dict[str, int]:
-        """Create idempotent maintenance candidates without mutating memories."""
+        """Refresh maintenance candidates and close issues made obsolete by review."""
+        closed_needs_review = self._close_resolved_needs_review_issues()
         for row in self.db.execute(
             "SELECT id FROM neurons WHERE layer=1 AND status='proposed'"
         ):
@@ -3776,6 +3778,7 @@ class NeuralMemory:
                     )
         self.db.commit()
         return {
+            "closed_needs_review_issues": closed_needs_review,
             "open_issues": self.db.execute(
                 "SELECT count(*) FROM maintenance_issues WHERE status='open'"
             ).fetchone()[0],
@@ -3786,6 +3789,21 @@ class NeuralMemory:
                 "SELECT count(*) FROM annotation_proposals WHERE status='pending'"
             ).fetchone()[0],
         }
+
+    def _close_resolved_needs_review_issues(self) -> int:
+        """Resolve stale review reminders once their L1 is no longer proposed."""
+        cursor = self.db.execute(
+            """UPDATE maintenance_issues
+               SET status='resolved', resolved_at=?
+               WHERE status='open' AND kind='needs_review'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM neurons n
+                     WHERE n.id=maintenance_issues.neuron_id
+                       AND n.layer=1 AND n.status='proposed'
+                 )""",
+            (now(),),
+        )
+        return cursor.rowcount
 
     def maintenance_inbox(self) -> dict[str, list[dict[str, object]]]:
         self.scan_maintenance()
@@ -4352,6 +4370,12 @@ class NeuralMemory:
                 )
                 for row in atoms
             ) or "- No linked memory cards"
+            historical_notice = (
+                "> 本页保存发布历史，可能包含当时有效、现在已过期的版本、分支、路径或测试数字。"
+                "当前运行事实请查看 [[01 当前运行状态]]。\n\n"
+                if str(concept["label"]) == "Release"
+                else ""
+            )
             page.write_text(
                 "---\n"
                 "view_type: compiled-memory\n"
@@ -4364,6 +4388,7 @@ class NeuralMemory:
                 f"# {concept['label']}\n\n"
                 "<!-- GENERATED:START -->\n"
                 "## 当前理解\n\n"
+                f"{historical_notice}"
                 f"{self._narrative(atoms)}\n\n"
                 "## Linked Memories\n\n"
                 f"{memory_lines}\n\n"
@@ -4624,6 +4649,44 @@ class NeuralMemory:
         )
 
         stats = self.stats()
+        confirmed_l1 = self.db.execute(
+            "SELECT count(*) FROM neurons WHERE layer=1 AND status='confirmed'"
+        ).fetchone()[0]
+        proposed_l1 = self.db.execute(
+            "SELECT count(*) FROM neurons WHERE layer=1 AND status='proposed'"
+        ).fetchone()[0]
+        archived_l1 = self.db.execute(
+            "SELECT count(*) FROM neurons WHERE layer=1 AND status='archived'"
+        ).fetchone()[0]
+        confirmed_families = self.db.execute(
+            "SELECT count(*) FROM concept_families WHERE status='confirmed' AND active=1"
+        ).fetchone()[0]
+        open_issues = self.db.execute(
+            "SELECT count(*) FROM maintenance_issues WHERE status='open'"
+        ).fetchone()[0]
+        current_state_page = self.obsidian_dir / "01 当前运行状态.md"
+        current_state_page.write_text(
+            "---\nview_type: runtime-status\ngenerated: true\ndo_not_ingest: true\n---\n\n"
+            "# 当前运行状态\n\n"
+            "> 本页由当前运行代码和 SQLite 索引生成；它是查看当前版本和运行状态的唯一页面。"
+            "历史发布记录请看 [[主题/Release]]，但其中的旧分支、旧路径和旧测试数字不代表现在。\n\n"
+            "## 当前版本\n\n"
+            f"- Neural Memory：v{SOFTWARE_VERSION}\n"
+            "- 运行代码：当前 MCP 配置指定的 `app/` Git 检出\n"
+            f"- 实时索引：`{self.db_path.relative_to(self.root)}`\n"
+            f"- 最近巩固：{self._get_meta('last_consolidated_at') or '尚未记录'}\n\n"
+            "## 当前记忆状态\n\n"
+            f"- 已确认 L1：{confirmed_l1}\n"
+            f"- 待审核 L1：{proposed_l1}\n"
+            f"- 已归档 L1：{archived_l1}\n"
+            f"- 活跃 L3F 家族：{confirmed_families}\n"
+            f"- 未关闭维护问题：{open_issues}\n\n"
+            "## 阅读边界\n\n"
+            "- `vault/` 中的 Markdown 是权威记忆；`memory.sqlite3` 是可重建索引。\n"
+            "- `obsidian-view/` 是生成的阅读和审核界面，不会自动回灌为记忆。\n"
+            "- 旧发布记录保留用于审计；只有本页描述当前运行状态。\n",
+            encoding="utf-8",
+        )
         home = self.obsidian_dir / "00 首页.md"
         confirmed_family_links = "\n".join(
             f"- [[{family_pages_by_id[str(family['id'])].relative_to(self.obsidian_dir).with_suffix('').as_posix()}]] — {self._family_display_name(family)}"
@@ -4646,6 +4709,9 @@ class NeuralMemory:
         home.write_text(
             "---\nview_type: compiled-memory\ngenerated: true\ndo_not_ingest: true\n---\n\n"
             "# 记忆系统首页\n\n"
+            "## 当前运行状态\n\n"
+            "- [[01 当前运行状态|查看当前版本、数据库和维护状态]]\n"
+            "- [[主题/Release|查看历史发布记录（不代表当前状态）]]\n\n"
             "## L3F 概念家族与主题导航\n\n"
             f"{links}\n- [[98 Archive]]\n- [[99 维护中心]]\n\n"
             "## 待审核的 L3F\n\n"
@@ -4663,7 +4729,7 @@ class NeuralMemory:
             encoding="utf-8",
         )
         return {
-            "pages": len(generated) + len(family_generated) + len(relation_generated) + 3,
+            "pages": len(generated) + len(family_generated) + len(relation_generated) + 4,
             "root": str(self.obsidian_dir),
             "annotation_sync": sync_result,
             "review_sync": review_sync,

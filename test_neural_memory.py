@@ -102,6 +102,29 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertTrue(self.memory.review(neuron_id, "confirmed"))
         self.assertNotIn(neuron_id, {row["id"] for row in self.memory.proposed()})
 
+    def test_maintenance_closes_review_issue_after_candidate_is_confirmed(self):
+        neuron_id = self.memory.remember(
+            "This candidate should stop creating review noise once confirmed.",
+            "test",
+        )
+        self.memory.scan_maintenance()
+        issue = self.memory.db.execute(
+            """SELECT id,status FROM maintenance_issues
+               WHERE neuron_id=? AND kind='needs_review'""",
+            (neuron_id,),
+        ).fetchone()
+        self.assertEqual(issue["status"], "open")
+
+        self.assertTrue(self.memory.review(neuron_id, "confirmed"))
+        result = self.memory.scan_maintenance()
+        self.assertEqual(result["closed_needs_review_issues"], 1)
+        self.assertEqual(
+            self.memory.db.execute(
+                "SELECT status FROM maintenance_issues WHERE id=?", (issue["id"],)
+            ).fetchone()[0],
+            "resolved",
+        )
+
     def test_proposed_memories_do_not_enter_retrieval_or_reinforcement(self):
         neuron_id = self.memory.remember(
             "An unreviewed constraint must never be injected into task context.",
@@ -538,6 +561,27 @@ class NeuralMemoryTests(unittest.TestCase):
         page.write_text(text, encoding="utf-8")
         self.memory.compile_obsidian()
         self.assertIn("This human annotation must be preserved.", page.read_text(encoding="utf-8"))
+
+    def test_obsidian_current_state_separates_runtime_from_release_history(self):
+        self.memory.remember(
+            "The historical release entry must not be presented as current runtime state.",
+            "test",
+            topics=["Release"],
+            confirmed=True,
+        )
+        self.memory.compile_obsidian()
+        current = (self.memory.obsidian_dir / "01 当前运行状态.md").read_text(
+            encoding="utf-8"
+        )
+        home = (self.memory.obsidian_dir / "00 首页.md").read_text(encoding="utf-8")
+        release = (self.memory.obsidian_dir / "主题" / "Release.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Neural Memory：v1.5.4", current)
+        self.assertIn("memory.sqlite3", current)
+        self.assertIn("[[01 当前运行状态|查看当前版本、数据库和维护状态]]", home)
+        self.assertIn("历史发布记录（不代表当前状态）", home)
+        self.assertIn("当前运行事实请查看 [[01 当前运行状态]]", release)
 
     def test_obsidian_compiler_generates_upper_layer_notes(self):
         self.memory.remember(
@@ -1057,7 +1101,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.3")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.4")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )

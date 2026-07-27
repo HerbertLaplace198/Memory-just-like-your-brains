@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.4 - 2026-07-27
+
+- Automatically resolve obsolete `needs_review` maintenance issues when their
+  L1 candidate is confirmed, archived, rejected, or no longer exists.
+- Add a generated Obsidian `01 当前运行状态` page for the current runtime,
+  canonical database, consolidation time, and live maintenance count.
+- Mark the `Release` topic as historical and link it from the homepage without
+  presenting historical version, branch, or test details as current state.
+
 ## 1.5.3 - 2026-07-27
 
 - Make `memory.sqlite3` the explicit canonical SQLite path. Detect a legacy

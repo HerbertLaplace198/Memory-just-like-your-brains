@@ -1,4 +1,4 @@
-# Neural Memory 1.5.3
+# Neural Memory 1.5.4
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
@@ -13,6 +13,9 @@ For the one-source release and runtime contract, see [`RUNTIME.md`](RUNTIME.md).
 - Use `<memory-root>/memory.sqlite3` as the sole live SQLite index. A legacy
   `.neural-memory/index.sqlite` is preserved and explicitly marked, never used
   by accident. L3 routing additionally requires live confirmed L1 support.
+- Keep Obsidian maintenance actionable: obsolete review issues close
+  automatically, and the generated runtime-status page separates current facts
+  from historical release records.
 - Store canonical governance records under the hidden `<root>/.neural-memory/`
   directory: semantic reviews, concept identities, duplicate decisions, and
   L3F family records. Keep `vault/` for human-auditable memories and evidence;
