@@ -588,6 +588,84 @@ class ConceptFamilyLayerTests(unittest.TestCase):
             finally:
                 memory.close()
 
+    @staticmethod
+    def _manual_family(
+        memory: NeuralMemory,
+        family_id: str,
+        labels: list[str],
+        status: str = "confirmed",
+    ) -> None:
+        keys: list[str] = []
+        for index, label in enumerate(labels):
+            row = memory._find_named(3, label)
+            if row is None:
+                memory._create_neuron(
+                    3, label, label, "confirmed", 0.95, 0.7,
+                    neuron_id=f"l3_{family_id[-4:]}_{index}",
+                )
+                row = memory._find_named(3, label)
+            assert row is not None
+            keys.append(memory._concept_key(row))
+        memory._persist_concept_family(
+            family_id, keys, status, status == "confirmed", label=family_id,
+        )
+        memory.db.commit()
+
+    def test_overlapping_confirmed_families_elect_exactly_one_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), HashEncoder())
+            try:
+                self._manual_family(
+                    memory, "l3f_alpha", ["Shared Topic", "Alpha One", "Alpha Two"]
+                )
+                self._manual_family(
+                    memory, "l3f_beta", ["Shared Topic", "Beta One", "Beta Two"]
+                )
+                result = memory.reconcile_concept_family_memberships()
+                self.assertEqual(result["suspended_families"], [])
+                families = {
+                    str(item["id"]): item
+                    for item in memory.concept_families(status="confirmed")
+                }
+                shared_key = "label:shared-topic"
+                roles = [
+                    families[family_id]["member_roles"][shared_key]
+                    for family_id in ("l3f_alpha", "l3f_beta")
+                ]
+                self.assertEqual(roles.count("primary"), 1)
+                self.assertEqual(roles.count("secondary"), 1)
+            finally:
+                memory.close()
+
+    def test_third_confirmed_family_is_suspended_not_routable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), HashEncoder())
+            try:
+                self._manual_family(
+                    memory, "l3f_alpha", ["Shared Topic", "Alpha One", "Alpha Two"]
+                )
+                self._manual_family(
+                    memory, "l3f_beta", ["Shared Topic", "Beta One", "Beta Two"]
+                )
+                self._manual_family(
+                    memory, "l3f_gamma", ["Shared Topic", "Gamma One", "Gamma Two"],
+                    status="proposed",
+                )
+                self.assertFalse(memory.review_concept_family("l3f_gamma", "confirm"))
+                suspended = memory.concept_families(
+                    status="proposed", active_only=False,
+                )
+                gamma = next(item for item in suspended if item["id"] == "l3f_gamma")
+                self.assertTrue(gamma["suspended"])
+                self.assertFalse(gamma["active"])
+                self.assertIn("Shared Topic", gamma["suspension_reason"])
+                self.assertNotIn(
+                    "l3f_gamma",
+                    {item["id"] for item in memory.concept_families()},
+                )
+            finally:
+                memory.close()
+
 
 if __name__ == "__main__":
     unittest.main()

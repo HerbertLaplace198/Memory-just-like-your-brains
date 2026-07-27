@@ -35,7 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
-SOFTWARE_VERSION = "1.5.5"
+SOFTWARE_VERSION = "1.5.6"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
@@ -45,6 +45,7 @@ CONCEPT_FAMILY_FORMAT = "neural-memory-concept-family/v1"
 L3F_SIZE_BONUS_CAP = 0.08
 L3F_MEMBER_SIZE_SCALE = 4.0
 L3F_SUPPORT_SIZE_SCALE = 12.0
+MAX_CONFIRMED_FAMILY_MEMBERSHIPS = 2
 L3_TOPIC_MATCH_MARGIN = 0.12
 L3_TOPIC_MATCH_THRESHOLD_HASH = 0.52
 L3_TOPIC_MATCH_THRESHOLD_SEMANTIC = 0.68
@@ -785,7 +786,10 @@ class NeuralMemory:
                 summary TEXT NOT NULL,
                 status TEXT NOT NULL CHECK(status IN ('proposed','confirmed','rejected')),
                 member_keys TEXT NOT NULL,
+                member_roles TEXT NOT NULL DEFAULT '{}',
                 active INTEGER NOT NULL DEFAULT 1,
+                suspended INTEGER NOT NULL DEFAULT 0,
+                suspension_reason TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -801,6 +805,21 @@ class NeuralMemory:
         if "reactivation_count" not in columns:
             self.db.execute(
                 "ALTER TABLE neurons ADD COLUMN reactivation_count INTEGER NOT NULL DEFAULT 0"
+            )
+        family_columns = {
+            row[1] for row in self.db.execute("PRAGMA table_info(concept_families)")
+        }
+        if "member_roles" not in family_columns:
+            self.db.execute(
+                "ALTER TABLE concept_families ADD COLUMN member_roles TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "suspended" not in family_columns:
+            self.db.execute(
+                "ALTER TABLE concept_families ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0"
+            )
+        if "suspension_reason" not in family_columns:
+            self.db.execute(
+                "ALTER TABLE concept_families ADD COLUMN suspension_reason TEXT NOT NULL DEFAULT ''"
             )
         if "last_reactivated" not in columns:
             self.db.execute("ALTER TABLE neurons ADD COLUMN last_reactivated TEXT")
@@ -1075,19 +1094,28 @@ class NeuralMemory:
             member_keys = sorted(
                 str(item) for item in metadata.get("member_keys", []) if str(item)
             )
+            member_roles = self._normalise_family_member_roles(
+                member_keys,
+                metadata.get("member_roles", {}),
+            )
+            suspended = bool(metadata.get("suspended", False))
+            suspension_reason = str(metadata.get("suspension_reason", ""))
             created_at = str(metadata.get("created_at", "")) or now()
             updated_at = str(metadata.get("updated_at", "")) or created_at
             label = str(metadata.get("label", "")) or f"概念家族 {family_id[4:]}"
             self.db.execute(
                 """INSERT INTO concept_families
-                   (id,label,summary,status,member_keys,active,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?)
+                   (id,label,summary,status,member_keys,member_roles,active,suspended,suspension_reason,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      label=excluded.label,
                      summary=excluded.summary,
                      status=excluded.status,
                      member_keys=excluded.member_keys,
+                     member_roles=excluded.member_roles,
                      active=excluded.active,
+                     suspended=excluded.suspended,
+                     suspension_reason=excluded.suspension_reason,
                      created_at=excluded.created_at,
                      updated_at=excluded.updated_at""",
                 (
@@ -1096,7 +1124,10 @@ class NeuralMemory:
                     body.strip(),
                     status,
                     json.dumps(member_keys, ensure_ascii=False),
-                    int(bool(metadata.get("active", True))),
+                    json.dumps(member_roles, ensure_ascii=False),
+                    int(bool(metadata.get("active", True)) and not suspended),
+                    int(suspended),
+                    suspension_reason,
                     created_at,
                     updated_at,
                 ),
@@ -2195,6 +2226,22 @@ class NeuralMemory:
         self.db.commit()
         return True
 
+    @staticmethod
+    def _normalise_family_member_roles(
+        member_keys: list[str],
+        member_roles: object,
+    ) -> dict[str, str]:
+        """Keep one explicit routing role for every L3F member."""
+        supplied = member_roles if isinstance(member_roles, dict) else {}
+        return {
+            key: (
+                "secondary"
+                if str(supplied.get(key, "primary")) == "secondary"
+                else "primary"
+            )
+            for key in sorted(set(member_keys))
+        }
+
     def _persist_concept_family(
         self,
         family_id: str,
@@ -2203,6 +2250,9 @@ class NeuralMemory:
         active: bool,
         label: str | None = None,
         created_at: str | None = None,
+        member_roles: dict[str, str] | None = None,
+        suspended: bool = False,
+        suspension_reason: str = "",
     ) -> None:
         member_keys = sorted(set(member_keys))
         existing = self.db.execute(
@@ -2219,6 +2269,9 @@ class NeuralMemory:
             or (str(existing["label"]) if existing else None)
             or f"概念家族 {family_id[4:]}"
         )
+        if member_roles is None and existing is not None:
+            member_roles = json.loads(str(existing["member_roles"]))
+        member_roles = self._normalise_family_member_roles(member_keys, member_roles)
         members = [
             self._find_concept_by_key(key)
             for key in member_keys
@@ -2239,7 +2292,10 @@ class NeuralMemory:
                 "label": label,
                 "status": status,
                 "member_keys": member_keys,
-                "active": active,
+                "member_roles": member_roles,
+                "active": active and not suspended,
+                "suspended": suspended,
+                "suspension_reason": suspension_reason,
                 "created_at": created_at,
                 "updated_at": updated_at,
             },
@@ -2247,14 +2303,17 @@ class NeuralMemory:
         )
         self.db.execute(
             """INSERT INTO concept_families
-               (id,label,summary,status,member_keys,active,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?)
+               (id,label,summary,status,member_keys,member_roles,active,suspended,suspension_reason,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  label=excluded.label,
                  summary=excluded.summary,
                  status=excluded.status,
                  member_keys=excluded.member_keys,
+                 member_roles=excluded.member_roles,
                  active=excluded.active,
+                 suspended=excluded.suspended,
+                 suspension_reason=excluded.suspension_reason,
                  updated_at=excluded.updated_at""",
             (
                 family_id,
@@ -2262,7 +2321,10 @@ class NeuralMemory:
                 summary,
                 status,
                 json.dumps(member_keys, ensure_ascii=False),
-                int(active),
+                json.dumps(member_roles, ensure_ascii=False),
+                int(active and not suspended),
+                int(suspended),
+                suspension_reason,
                 created_at,
                 updated_at,
             ),
@@ -2343,11 +2405,15 @@ class NeuralMemory:
             if identity is not None:
                 family_id = str(identity["id"])
                 status = str(identity["status"])
+                suspended = bool(identity["suspended"])
+                suspension_reason = str(identity["suspension_reason"])
                 if (
                     status == "confirmed"
                     and set(json.loads(identity["member_keys"])) != member_set
                 ):
                     status = "proposed"
+                    suspended = False
+                    suspension_reason = ""
                 label = str(identity["label"])
                 created_at = str(identity["created_at"])
             else:
@@ -2356,10 +2422,12 @@ class NeuralMemory:
                 ).hexdigest()[:10]
                 family_id = f"l3f_{digest}"
                 status = "proposed"
+                suspended = False
+                suspension_reason = ""
                 label = f"概念家族 {digest}"
                 created_at = now()
             used_ids.add(family_id)
-            active = status != "rejected"
+            active = status != "rejected" and not suspended
             self._persist_concept_family(
                 family_id,
                 member_keys,
@@ -2367,6 +2435,8 @@ class NeuralMemory:
                 active,
                 label,
                 created_at,
+                suspended=suspended,
+                suspension_reason=suspension_reason,
             )
             active_count += int(active)
         return active_count
@@ -2392,10 +2462,15 @@ class NeuralMemory:
         ):
             item = dict(row)
             item["member_keys"] = json.loads(str(row["member_keys"]))
+            item["member_roles"] = self._normalise_family_member_roles(
+                list(item["member_keys"]),
+                json.loads(str(row["member_roles"])),
+            )
             item["members"] = [
                 {
                     "id": concept["id"],
                     "label": concept["label"],
+                    "role": item["member_roles"].get(str(key), "primary"),
                 }
                 for key in item["member_keys"]
                 if (concept := self._find_concept_by_key(str(key))) is not None
@@ -2409,6 +2484,157 @@ class NeuralMemory:
             )
             result.append(item)
         return result
+
+    @staticmethod
+    def _primary_family_members(family: dict[str, object]) -> list[dict[str, object]]:
+        """Only primary members let a family represent an L3 during routing."""
+        return [
+            member for member in family.get("members", [])
+            if isinstance(member, dict) and member.get("role", "primary") == "primary"
+        ]
+
+    def _family_member_affinity(
+        self,
+        member_key: str,
+        family: dict[str, object],
+    ) -> float:
+        """Score how well one L3 is represented by a family, not just its size."""
+        member = self._find_concept_by_key(member_key)
+        if member is None:
+            return float("-inf")
+        peers = [
+            self._find_concept_by_key(str(key))
+            for key in family.get("member_keys", [])
+            if str(key) != member_key
+        ]
+        peers = [peer for peer in peers if peer is not None]
+        if not peers:
+            return float("-inf")
+        semantic = sum(cosine(self._vector(member), self._vector(peer)) for peer in peers) / len(peers)
+        own_support = {
+            str(atom["id"])
+            for atom in self._related_atoms(str(member["id"]))
+            if atom["status"] == "confirmed"
+        }
+        peer_support: set[str] = set()
+        for peer in peers:
+            peer_support.update(
+                str(atom["id"])
+                for atom in self._related_atoms(str(peer["id"]))
+                if atom["status"] == "confirmed"
+            )
+        evidence_overlap = len(own_support & peer_support) / max(1, len(own_support | peer_support))
+        breadth_penalty = min(0.12, 0.04 * math.log1p(max(0, len(peers) - 2)))
+        return 0.70 * max(0.0, semantic) + 0.30 * evidence_overlap - breadth_penalty
+
+    def _elect_confirmed_family_roles(
+        self,
+        family: dict[str, object],
+    ) -> tuple[dict[str, str], dict[str, dict[str, str]], list[str]]:
+        """Elect one primary representative; a second family is browse-only."""
+        existing = [
+            item for item in self.concept_families(status="confirmed")
+            if str(item["id"]) != str(family["id"])
+        ]
+        roles = self._normalise_family_member_roles(
+            list(family["member_keys"]),
+            family.get("member_roles", {}),
+        )
+        updates: dict[str, dict[str, str]] = {}
+        over_limit: list[str] = []
+        for member_key in family["member_keys"]:
+            competitors = [
+                item for item in existing
+                if member_key in item["member_keys"]
+            ]
+            if len(competitors) >= MAX_CONFIRMED_FAMILY_MEMBERSHIPS:
+                over_limit.append(str(member_key))
+                continue
+            candidates = competitors + [family]
+            winner = max(
+                candidates,
+                key=lambda item: (
+                    self._family_member_affinity(str(member_key), item),
+                    str(item["id"]),
+                ),
+            )
+            roles[str(member_key)] = (
+                "primary" if str(winner["id"]) == str(family["id"]) else "secondary"
+            )
+            for competitor in competitors:
+                member_roles = updates.setdefault(
+                    str(competitor["id"]),
+                    self._normalise_family_member_roles(
+                        list(competitor["member_keys"]),
+                        competitor.get("member_roles", {}),
+                    ),
+                )
+                member_roles[str(member_key)] = (
+                    "primary" if str(winner["id"]) == str(competitor["id"]) else "secondary"
+                )
+        return roles, updates, over_limit
+
+    @serialized_write
+    def reconcile_concept_family_memberships(self) -> dict[str, object]:
+        """Migrate legacy overlaps to elected primary/secondary family roles."""
+        families = self.concept_families(status="confirmed")
+        memberships: dict[str, list[dict[str, object]]] = {}
+        for family in families:
+            for member_key in family["member_keys"]:
+                memberships.setdefault(str(member_key), []).append(family)
+        roles_by_family = {
+            str(family["id"]): self._normalise_family_member_roles(
+                list(family["member_keys"]), family.get("member_roles", {})
+            )
+            for family in families
+        }
+        suspended: list[str] = []
+        for member_key, candidates in memberships.items():
+            ranked = sorted(
+                candidates,
+                key=lambda item: (
+                    self._family_member_affinity(member_key, item),
+                    str(item["id"]),
+                ),
+                reverse=True,
+            )
+            eligible = ranked[:MAX_CONFIRMED_FAMILY_MEMBERSHIPS]
+            winner = max(
+                eligible,
+                key=lambda item: (
+                    self._family_member_affinity(member_key, item),
+                    str(item["id"]),
+                ),
+            )
+            for family in eligible:
+                roles_by_family[str(family["id"])][member_key] = (
+                    "primary" if str(family["id"]) == str(winner["id"]) else "secondary"
+                )
+            member = self._find_concept_by_key(member_key)
+            member_label = str(member["label"]) if member is not None else member_key
+            for family in ranked[MAX_CONFIRMED_FAMILY_MEMBERSHIPS:]:
+                self._persist_concept_family(
+                    str(family["id"]), list(family["member_keys"]), "proposed", False,
+                    str(family["label"]), str(family["created_at"]),
+                    roles_by_family[str(family["id"])], True,
+                    f"{member_label} 只保留最匹配的 {MAX_CONFIRMED_FAMILY_MEMBERSHIPS} 个已确认家族；需要人工处理家族冲突。",
+                )
+                suspended.append(str(family["id"]))
+        for family in families:
+            family_id = str(family["id"])
+            if family_id in suspended:
+                continue
+            self._persist_concept_family(
+                family_id, list(family["member_keys"]), "confirmed", True,
+                str(family["label"]), str(family["created_at"]),
+                roles_by_family[family_id], False, "",
+            )
+        self.db.commit()
+        return {
+            "confirmed_families": len(families) - len(set(suspended)),
+            "suspended_families": sorted(set(suspended)),
+            "max_memberships": MAX_CONFIRMED_FAMILY_MEMBERSHIPS,
+        }
 
     @staticmethod
     def _family_display_name(family: dict[str, object]) -> str:
@@ -2516,7 +2742,7 @@ class NeuralMemory:
         routable_families: list[dict[str, object]] = []
         for family in families:
             members: list[dict[str, object]] = []
-            for member in family["members"]:
+            for member in self._primary_family_members(family):
                 concept = self.db.execute(
                     "SELECT * FROM neurons WHERE id=?", (member["id"],)
                 ).fetchone()
@@ -2645,19 +2871,57 @@ class NeuralMemory:
         if decision not in {"confirm", "reject"}:
             raise ValueError("concept family decision must be confirm or reject")
         family = self.db.execute(
-            "SELECT * FROM concept_families WHERE id=? AND active=1",
+            "SELECT * FROM concept_families WHERE id=?",
             (family_id,),
         ).fetchone()
         if not family:
             return False
-        status = "confirmed" if decision == "confirm" else "rejected"
+        member_keys = list(json.loads(family["member_keys"]))
+        member_roles = self._normalise_family_member_roles(
+            member_keys, json.loads(str(family["member_roles"]))
+        )
+        if decision == "confirm":
+            candidate = {
+                "id": str(family["id"]),
+                "member_keys": member_keys,
+                "member_roles": member_roles,
+            }
+            member_roles, updates, over_limit = self._elect_confirmed_family_roles(candidate)
+            if over_limit:
+                over_limit_labels = [
+                    str(concept["label"])
+                    if (concept := self._find_concept_by_key(key)) is not None
+                    else key
+                    for key in over_limit
+                ]
+                self._persist_concept_family(
+                    family_id, member_keys, "proposed", False, str(family["label"]),
+                    str(family["created_at"]), member_roles, True,
+                    "、".join(over_limit_labels)
+                    + f" 已属于 {MAX_CONFIRMED_FAMILY_MEMBERSHIPS} 个已确认家族；需要先处理家族冲突。",
+                )
+                self.db.commit()
+                return False
+            by_id = {str(item["id"]): item for item in self.concept_families(status="confirmed")}
+            for other_id, roles in updates.items():
+                other = by_id[other_id]
+                self._persist_concept_family(
+                    other_id, list(other["member_keys"]), "confirmed", True,
+                    str(other["label"]), str(other["created_at"]), roles,
+                )
+            status = "confirmed"
+            active = True
+        else:
+            status = "rejected"
+            active = False
         self._persist_concept_family(
             family_id,
-            list(json.loads(family["member_keys"])),
+            member_keys,
             status,
-            decision == "confirm",
+            active,
             str(family["label"]),
             str(family["created_at"]),
+            member_roles,
         )
         self.db.commit()
         return True
@@ -3210,7 +3474,7 @@ class NeuralMemory:
                     status="confirmed",
                     include_relations=False,
                 )
-                for member in family["members"]
+                for member in self._primary_family_members(family)
             }
             selected_concept_ids = set(
                 str(item) for item in family_routing["selected_concept_ids"]
@@ -3412,7 +3676,7 @@ class NeuralMemory:
                     status="confirmed",
                     include_relations=False,
                 )
-                for member in family["members"]
+                for member in self._primary_family_members(family)
             }
             independent_routes = [
                 route for route in all_routes
@@ -4403,6 +4667,7 @@ class NeuralMemory:
             page = family_dir / f"{safe_filename(display_label)}.md"
             member_lines = "\n".join(
                 f"- [[主题/{safe_filename(str(member['label']))}|{member['label']}]]"
+                f"（{'主家族代表' if member.get('role') == 'primary' else '交叉关联'}）"
                 for member in family["members"]
             ) or "- No active member concepts"
             shared_relation_lines = "\n".join(
@@ -4441,7 +4706,8 @@ class NeuralMemory:
             family_pages_by_id[str(family["id"])] = page
             if family["status"] == "confirmed":
                 grouped_concept_ids.update(
-                    str(member["id"]) for member in family["members"]
+                    str(member["id"])
+                    for member in self._primary_family_members(family)
                 )
 
         relation_generated: list[Path] = []
@@ -4581,6 +4847,17 @@ class NeuralMemory:
             if family_sections
             else "- 当前没有待审核的 L3F 概念家族"
         )
+        suspended_families = [
+            family for family in self.concept_families(
+                status="proposed", active_only=False,
+            )
+            if family.get("suspended")
+        ]
+        suspended_family_lines = "\n".join(
+            f"- `{family['id']}` **{self._family_display_name(family)}**："
+            f"{family.get('suspension_reason') or '超过家族归属上限，需要人工处理。'}"
+            for family in suspended_families
+        ) or "- 当前没有暂停的 L3F 概念家族"
         issue_lines = "\n".join(
             f"- `{item['id']}` **{item['severity']}** {item['kind']}：{item['details']}"
             for item in inbox["issues"]
@@ -4605,7 +4882,8 @@ class NeuralMemory:
             "这里只显示尚未确认的 proposed L3。确认后会进入正式 L3 路由，并从审核列表中移除；拒绝会移除这一条 L3 连接，但不会删除其 L1 原始记忆。\n\n"
             + legacy_duplicate_markers
             + "\n## L3F 概念家族审核\n\n" + family_lines + "\n\n"
-            "L3F 只对相关 L3 进行分组和注意力导航，不会合并概念，也不会改变 L4–L6 的编号。确认后首页会折叠展示其成员；拒绝后不会重复生成完全相同的分组。\n\n"
+            "L3F 只对相关 L3 进行分组和注意力导航，不会合并概念，也不会改变 L4–L6 的编号。每个主题只能有一个主家族代表默认检索，最多保留一个交叉关联；第三个已确认家族会自动暂停。\n\n"
+            "## 暂停的 L3F 家族冲突\n\n" + suspended_family_lines + "\n\n"
             "## 人工批注候选\n\n" + proposal_lines + "\n\n"
             "## 系统问题\n\n" + issue_lines + "\n\n"
             "## 待审核关系\n\n" + relation_lines + "\n",
@@ -5068,7 +5346,7 @@ def parser() -> argparse.ArgumentParser:
     )
     concept_duplicate.add_argument("review_id", nargs="?")
     concept_family = commands.add_parser("concept-family")
-    concept_family.add_argument("action", choices=["list", "confirm", "reject"])
+    concept_family.add_argument("action", choices=["list", "confirm", "reject", "reconcile"])
     concept_family.add_argument("family_id", nargs="?")
     evaluator = commands.add_parser("evaluate")
     evaluator.add_argument("cases", type=Path)
@@ -5324,6 +5602,13 @@ def main(argv: list[str] | None = None) -> int:
                     ensure_ascii=False,
                     indent=2,
                 ))
+            elif args.action == "reconcile":
+                print(json.dumps(
+                    memory.reconcile_concept_family_memberships(),
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+                memory.compile_obsidian()
             else:
                 if not args.family_id:
                     print("family_id is required", file=sys.stderr)

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.6 - 2026-07-27
+
+- Add elected primary L3F membership: each topic has at most one family that
+  represents it during routing, plus at most one browse-only secondary family.
+- Score the primary representative using semantic affinity, confirmed L1
+  evidence overlap, and a bounded breadth penalty.
+- Suspend a proposed family before confirmation when one of its members already
+  has two confirmed families; expose the reason in the maintenance dashboard.
+- Add a `concept-family reconcile` migration command for existing family
+  overlaps, and show primary versus cross-family roles on generated family pages.
+
 ## 1.5.5 - 2026-07-27
 
 - Keep L2 episodes as shared context only; each L1 now connects directly to its

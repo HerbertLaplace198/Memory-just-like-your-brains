@@ -577,7 +577,7 @@ class NeuralMemoryTests(unittest.TestCase):
         release = (self.memory.obsidian_dir / "主题" / "Release.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Neural Memory：v1.5.5", current)
+        self.assertIn("Neural Memory：v1.5.6", current)
         self.assertIn("memory.sqlite3", current)
         self.assertIn("[[01 当前运行状态|查看当前版本、数据库和维护状态]]", home)
         self.assertIn("历史发布记录（不代表当前状态）", home)
@@ -1151,7 +1151,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.5")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.6")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )

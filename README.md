@@ -1,4 +1,4 @@
-# Neural Memory 1.5.5
+# Neural Memory 1.5.6
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 
@@ -50,6 +50,13 @@ For the one-source release and runtime contract, see [`RUNTIME.md`](RUNTIME.md).
 
 ## Unreleased
 
+- Elect one primary L3F representative for every topic and allow at most one
+  browse-only secondary family association. A proposed third confirmed family
+  is suspended with a human-readable conflict reason instead of entering
+  routing.
+- Score primary representation from L3 semantic affinity, confirmed L1 support
+  overlap, and a bounded family-breadth penalty. Secondary associations remain
+  visible in Obsidian but cannot duplicate retrieval authority.
 - Give larger confirmed L3F families slightly more routing authority using a
   saturating member/L1 support bonus capped by `family_size_bonus_cap` (default
   `0.08`). The family relevance gate remains primary, and L3 member scores are
