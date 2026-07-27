@@ -95,7 +95,9 @@ class MCPServer:
                 "name": "memory_propose",
                 "description": (
                     "Submit a proposed memory after a task. It always enters human review and "
-                    "can never create a confirmed memory directly."
+                    "can never create a confirmed memory directly. Structural labels in "
+                    "topics, procedures, schemas, episode, and domain must be English; "
+                    "the memory text may use any language."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -194,7 +196,7 @@ class MCPServer:
                 "known": known,
                 "peak_l1_activation": round(peak, 4),
                 "l3f_routing": family_routing,
-                "formula": "retention * governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
+                "formula": "retention × governance × (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
                 "activations": [
                     {
                         "id": item.id,

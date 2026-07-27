@@ -4,5 +4,6 @@
   "model": "qwen3-embedding:0.6b",
   "dimensions": 1024,
   "timeout": 60,
-  "gate_threshold": 0.55
+  "gate_threshold": 0.55,
+  "family_gate_threshold": 0.42
 }

@@ -4,6 +4,21 @@ Neural Memory is an auditable, layered, local-first memory system. Canonical mem
 
 For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
 
+## Current maintenance updates
+
+- Store canonical governance records under the hidden `<root>/.neural-memory/`
+  directory: semantic reviews, concept identities, duplicate decisions, and
+  L3F family records. Keep `vault/` for human-auditable memories and evidence;
+  do not commit either directory from a real memory root.
+- Use readable L3F names in Obsidian while retaining stable internal IDs in
+  backend metadata. Confirmed family pages no longer show review links.
+- Require English structural labels for new topics, episodes, procedures,
+  schemas, and domains; memory bodies may remain in any language. Known
+  Chinese aliases are canonicalized to English before indexing.
+- Enrich multilingual family queries with known English concept aliases and
+  use a separate configurable `family_gate_threshold`; the live Qwen
+  configuration is calibrated at `0.42` for L3F routing.
+
 ## What changed in 1.4.0
 
 - Make confirmed L3F families participate in first-stage semantic routing
@@ -23,7 +38,7 @@ For installation and day-to-day commands, see [`USAGE.md`](USAGE.md).
 - Add L3F, a stable concept-family layer that groups three or more related L3
   concepts without merging them or renumbering L4-L6.
 - Keep L3F outside the neuron layer numbering and store its identity and review
-  state as canonical Markdown under `vault/concept-families/`.
+  state as canonical Markdown under `.neural-memory/concept-families/`.
 - Let reviewers confirm or reject proposed families in Obsidian or through the
   `concept-family` CLI.
 - Collapse confirmed family members into one family entry on the Obsidian home

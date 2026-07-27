@@ -46,6 +46,7 @@ CONCEPT_ALIASES = {
     "btc": "Bitcoin",
     "cashflow": "Investment Risk and Cash Flow",
     "codex": "Codex",
+    "codex配置": "Codex Configuration",
     "communication": "Collaboration Preferences",
     "economics": "Economics",
     "efficiency": "Collaboration Preferences",
@@ -75,6 +76,20 @@ CONCEPT_ALIASES = {
     "workflow": "Workflow",
     "writing workflow": "Writing Workflow",
     "writing-guide": "Thesis Writing Guide",
+    "投资": "Investment",
+    "机构观点": "Institutional Verification",
+    "核验": "Institutional Verification",
+    "记忆系统": "Memory System",
+    "资产配置": "Asset Allocation",
+    "主动核对": "Proactive Checking",
+    "写作流程": "Writing Workflow",
+    "用户偏好": "User Preference",
+    "论文": "Thesis",
+    "偏好": "User Preference",
+    "写作指南": "Thesis Writing Guide",
+    "论文写作指南": "Thesis Writing Guide",
+    "神经记忆": "Memory System",
+    "记忆检索": "Memory Retrieval",
 }
 NON_TOPIC_CONCEPTS = {"index", "status"}
 TOPIC_PARENTS = {
@@ -94,7 +109,7 @@ MEMORY_REVIEW_RE = re.compile(
     re.MULTILINE,
 )
 CONCEPT_REVIEW_RE = re.compile(
-    r"^\s*- \[[xX]\].*?<!-- concept-review:(confirm|reject):(l3_[0-9a-f]+) -->\s*$",
+    r"^\s*- \[[xX]\].*?<!-- concept-review:(confirm|revise|reject):(l3_[0-9a-f]+) -->\s*$",
     re.MULTILINE,
 )
 CONCEPT_DUPLICATE_REVIEW_RE = re.compile(
@@ -189,6 +204,7 @@ class TextEncoder(Protocol):
     name: str
     dimensions: int
     gate_threshold: float
+    family_gate_threshold: float
 
     def encode(self, text: str) -> list[float]: ...
 
@@ -200,6 +216,7 @@ class HashEncoder:
 
     name = "feature-hash-v1"
     gate_threshold = 0.48
+    family_gate_threshold = 0.23
 
     def __init__(self, dimensions: int = VECTOR_DIMS, gate_threshold: float = 0.48):
         self.dimensions = dimensions
@@ -223,6 +240,7 @@ class LocalHTTPEncoder:
         dimensions: int,
         timeout: float = 30.0,
         gate_threshold: float = 0.30,
+        family_gate_threshold: float = 0.42,
     ):
         parsed = urlparse(endpoint)
         if parsed.scheme not in ("http", "https") or parsed.hostname not in (
@@ -241,6 +259,7 @@ class LocalHTTPEncoder:
         self.dimensions = dimensions
         self.timeout = timeout
         self.gate_threshold = gate_threshold
+        self.family_gate_threshold = family_gate_threshold
         self.name = f"{provider}:{model}"
 
     def encode(self, text: str) -> list[float]:
@@ -283,6 +302,7 @@ def load_encoder_config(path: Path) -> TextEncoder:
         int(config["dimensions"]),
         float(config.get("timeout", 30.0)),
         float(config.get("gate_threshold", 0.30)),
+        float(config.get("family_gate_threshold", 0.42)),
     )
 
 
@@ -296,7 +316,7 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 
 def compact(text: str, width: int = 100) -> str:
-    return text if len(text) <= width else text[: width - 3] + "..."
+    return text if len(text) <= width else text[: width - 1] + "…"
 
 
 def rough_tokens(text: str) -> int:
@@ -308,7 +328,7 @@ def rough_tokens(text: str) -> int:
 
 def safe_filename(text: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|]", "-", text).strip().strip(".")
-    return compact(cleaned or "Untitled", 80)
+    return compact(cleaned or "未命名", 80)
 
 
 def canonical_concept(text: str) -> str:
@@ -363,6 +383,19 @@ def require_english_labels(values: Iterable[str], field: str) -> list[str]:
     if invalid:
         raise ValueError(f"{field} must use English-only labels: {invalid!r}")
     return labels
+
+
+def enrich_query_with_known_concepts(query: str) -> str:
+    """Add canonical English aliases so multilingual queries can reach L3F."""
+    lowered = query.casefold()
+    aliases = [
+        canonical
+        for alias, canonical in sorted(
+            CONCEPT_ALIASES.items(), key=lambda item: len(item[0]), reverse=True
+        )
+        if not alias.isascii() and alias in lowered
+    ]
+    return " ".join([query, *dict.fromkeys(aliases)]).strip()
 
 
 def write_record(path: Path, metadata: dict[str, object], body: str) -> None:
@@ -420,15 +453,17 @@ class NeuralMemory:
         self.allow_encoder_mismatch = allow_encoder_mismatch
         self.db_path = self.root / "memory.sqlite3"
         self.vault_dir = self.root / "vault"
+        self.backend_dir = self.root / ".neural-memory"
         self.evidence_dir = self.vault_dir / "evidence"
         self.memory_dir = self.vault_dir / "memories"
-        self.semantic_review_dir = self.vault_dir / "semantic-reviews"
-        self.concept_identity_dir = self.vault_dir / "concept-identities"
-        self.concept_decision_dir = self.vault_dir / "concept-decisions"
-        self.concept_family_dir = self.vault_dir / "concept-families"
+        self.semantic_review_dir = self.backend_dir / "semantic-reviews"
+        self.concept_identity_dir = self.backend_dir / "concept-identities"
+        self.concept_decision_dir = self.backend_dir / "concept-decisions"
+        self.concept_family_dir = self.backend_dir / "concept-families"
         self.rejected_dir = self.vault_dir / ".rejected"
         self.obsidian_dir = self.root / "obsidian-view"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.backend_dir.mkdir(parents=True, exist_ok=True)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.semantic_review_dir.mkdir(parents=True, exist_ok=True)
@@ -937,7 +972,7 @@ class NeuralMemory:
             )
             created_at = str(metadata.get("created_at", "")) or now()
             updated_at = str(metadata.get("updated_at", "")) or created_at
-            label = str(metadata.get("label", "")) or f"Concept Family {family_id[4:]}"
+            label = str(metadata.get("label", "")) or f"概念家族 {family_id[4:]}"
             self.db.execute(
                 """INSERT INTO concept_families
                    (id,label,summary,status,member_keys,active,created_at,updated_at)
@@ -1574,6 +1609,63 @@ class NeuralMemory:
         self.db.commit()
         return True
 
+    @serialized_write
+    def review_l3_concept(self, concept_id: str, decision: str) -> bool:
+        """Apply a human confirmation or rejection to a named L3 concept."""
+        if decision not in {"confirm", "reject"}:
+            raise ValueError("L3 concept decision must be confirm or reject")
+        concept = self.db.execute(
+            "SELECT * FROM neurons WHERE id=? AND layer=3",
+            (concept_id,),
+        ).fetchone()
+        if not concept:
+            return False
+        member_ids = sorted(
+            str(row["id"]) for row in self._related_atoms(concept_id)
+        )
+        reviewed_at = now()
+        status = "confirmed" if decision == "confirm" else "rejected"
+        write_record(
+            self.semantic_review_dir / f"{concept_id}.md",
+            {
+                "format": SEMANTIC_REVIEW_FORMAT,
+                "concept_id": concept_id,
+                "status": status,
+                "member_ids": member_ids,
+                "reviewed_at": reviewed_at,
+            },
+            (
+                f"Human review of L3 {concept_id}: {status}. "
+                f"Supported by {len(member_ids)} atomic memory traces."
+            ),
+        )
+        self.db.execute(
+            """INSERT INTO semantic_reviews(concept_id,status,member_ids,reviewed_at)
+               VALUES(?,?,?,?)
+               ON CONFLICT(concept_id) DO UPDATE SET
+                 status=excluded.status,
+                 member_ids=excluded.member_ids,
+                 reviewed_at=excluded.reviewed_at""",
+            (concept_id, status, json.dumps(member_ids), reviewed_at),
+        )
+        if decision == "confirm":
+            self.db.execute(
+                """UPDATE neurons
+                   SET status='confirmed',confidence=max(confidence,0.95),
+                       stability=max(stability,0.68)
+                   WHERE id=?""",
+                (concept_id,),
+            )
+        else:
+            self.db.execute(
+                "DELETE FROM synapses WHERE source_id=? OR target_id=?",
+                (concept_id, concept_id),
+            )
+            self.db.execute("DELETE FROM neurons WHERE id=?", (concept_id,))
+            self._consolidate_derived_state()
+        self.db.commit()
+        return True
+
     def _concept_prototype(
         self, concept: sqlite3.Row
     ) -> tuple[list[float], set[str]]:
@@ -1655,7 +1747,7 @@ class NeuralMemory:
                     )
                     or (
                         not emergent_pair
-                        and label_score >= 0.68
+                        and label_score >= 0.70
                         and (
                             member_overlap >= 0.25
                             or vector_score >= 0.82
@@ -1871,7 +1963,7 @@ class NeuralMemory:
         label = (
             label
             or (str(existing["label"]) if existing else None)
-            or f"Concept Family {family_id[4:]}"
+            or f"概念家族 {family_id[4:]}"
         )
         members = [
             self._find_concept_by_key(key)
@@ -1881,8 +1973,8 @@ class NeuralMemory:
             str(row["label"]) for row in members if row is not None
         ]
         summary = (
-            f"L3F concept family grouping {len(member_labels)} related L3 concepts: "
-            f"{', '.join(member_labels)}."
+            f"L3F 概念家族包含 {len(member_labels)} 个相关 L3 概念："
+            f"{'、'.join(member_labels)}。"
         )
         updated_at = now()
         write_record(
@@ -2010,7 +2102,7 @@ class NeuralMemory:
                 ).hexdigest()[:10]
                 family_id = f"l3f_{digest}"
                 status = "proposed"
-                label = f"Concept Family {digest}"
+                label = f"概念家族 {digest}"
                 created_at = now()
             used_ids.add(family_id)
             active = status != "rejected"
@@ -2063,6 +2155,25 @@ class NeuralMemory:
             )
             result.append(item)
         return result
+
+    @staticmethod
+    def _family_display_name(family: dict[str, object]) -> str:
+        """Return a short human-readable name without exposing the internal ID."""
+        labels = [
+            str(member.get("label", "")).strip()
+            for member in family.get("members", [])
+            if isinstance(member, dict) and str(member.get("label", "")).strip()
+        ]
+        normalized = {label.casefold() for label in labels}
+        if {"memory system", "memory retrieval"} <= normalized:
+            return "L3F · Neural Memory System"
+        if {"proactive checking", "user preference", "writing workflow"} <= normalized:
+            return "L3F · Personal Writing Workflow"
+        if {"economics", "thesis"} <= normalized:
+            return "L3F · Academic Thesis Writing"
+        if labels:
+            return f"L3F · {labels[0]} & related concepts"
+        return "L3F · Unnamed Concept Family"
 
     def _family_shared_relations(
         self,
@@ -2126,20 +2237,22 @@ class NeuralMemory:
                 "families": [],
                 "selected_concept_ids": [],
             }
-        query_vector = self._encode(query)
-        query_terms = set(features(query))
+        routing_query = enrich_query_with_known_concepts(query)
+        query_vector = self._encode(routing_query)
+        query_terms = set(features(routing_query))
         scored: list[tuple[float, dict[str, object]]] = []
         for family in families:
             member_labels = " ".join(
                 str(member["label"]) for member in family["members"]
             )
+            display_name = self._family_display_name(family)
             representation = self._encode(
-                f"{family['label']} {family['summary']} {member_labels}"
+                f"{display_name} {family['label']} {family['summary']} {member_labels}"
             )
             semantic = max(0.0, cosine(query_vector, representation))
             family_terms = set(
                 features(
-                    f"{family['label']} {family['summary']} {member_labels}"
+                    f"{display_name} {family['label']} {family['summary']} {member_labels}"
                 )
             )
             lexical = (
@@ -2150,7 +2263,9 @@ class NeuralMemory:
             score = 0.75 * semantic + 0.25 * lexical
             scored.append((score, family))
         scored.sort(key=lambda item: item[0], reverse=True)
-        threshold = 0.23 if isinstance(self.encoder, HashEncoder) else 0.50
+        threshold = float(
+            getattr(self.encoder, "family_gate_threshold", 0.23)
+        )
         peak = scored[0][0]
         if peak < threshold:
             return {
@@ -2181,7 +2296,7 @@ class NeuralMemory:
             "families": [
                 {
                     "id": family["id"],
-                    "label": family["label"],
+                    "label": self._family_display_name(family),
                     "activation": round(score, 6),
                     "member_concept_ids": [
                         str(member["id"]) for member in family["members"]
@@ -2240,6 +2355,13 @@ class NeuralMemory:
             )
         ]
         procedure_labels = require_english_labels(procedures, "procedures")
+        persona_labels = require_english_labels(schemas, "schemas")
+        episode_labels = require_english_labels(
+            [episode] if episode else [], "episode"
+        )
+        domain_labels = require_english_labels(
+            [domain] if domain else [], "domain"
+        )
         evidence_id = short_id("ev")
         neuron_id = short_id("l1")
         created_at = now()
@@ -2263,11 +2385,11 @@ class NeuralMemory:
             "confidence": 0.95 if confirmed else 0.68,
             "importance": importance,
             "created_at": created_at,
-            "episode": episode or "",
+            "episode": episode_labels[0] if episode_labels else "",
             "concepts": concept_labels,
             "procedures": procedure_labels,
-            "personas": list(dict.fromkeys(item.strip() for item in schemas if item.strip())),
-            "domain": (domain or "").strip(),
+            "personas": persona_labels,
+            "domain": domain_labels[0] if domain_labels else "",
             "expires_at": (expires_at or "").strip(),
             "supersedes": list(dict.fromkeys(x.strip() for x in supersedes if x.strip())),
             "conflicts": list(dict.fromkeys(x.strip() for x in conflicts if x.strip())),
@@ -2316,14 +2438,14 @@ class NeuralMemory:
                 neuron_id,
                 str(target_id),
                 "supersedes",
-                "Declared as a replacement during ingestion; human review is required before the old memory is archived.",
+                "写入时声明为旧记忆的替代版本；需人工确认后归档旧记忆。",
             )
         for target_id in record.get("conflicts", []):
             self._add_relation(
                 neuron_id,
                 str(target_id),
                 "conflicts_with",
-                "Declared as a conflict during ingestion; retain both memories pending human review.",
+                "写入时声明存在冲突；保留双方，等待人工裁决。",
             )
 
         if status in {"rejected", "archived"}:
@@ -2354,11 +2476,11 @@ class NeuralMemory:
         if not concept_labels and any(token in source.casefold() for token in ("skill", "tool")):
             concept_labels = ["Tools"]
         level_specs: list[tuple[int, list[str], str, str]] = [
-            (2, [str(record.get("episode", ""))], "episode", "episodic memory"),
-            (3, concept_labels, "member_of", "semantic concept"),
-            (4, english_only_labels(record.get("procedures", [])), "used_in", "procedural memory"),
-            (5, [str(x) for x in record.get("personas", [])], "supports", "stable model"),
-            (6, [str(record.get("domain", ""))], "routes_to", "meta-memory domain"),
+            (2, [str(record.get("episode", ""))], "episode", "情景记忆"),
+            (3, concept_labels, "member_of", "语义概念"),
+            (4, english_only_labels(record.get("procedures", [])), "used_in", "程序记忆"),
+            (5, [str(x) for x in record.get("personas", [])], "supports", "稳定模型"),
+            (6, [str(record.get("domain", ""))], "routes_to", "元记忆域"),
         ]
         for layer, labels, relation, kind in level_specs:
             clean = (
@@ -2388,7 +2510,7 @@ class NeuralMemory:
                     upper_id = self._create_neuron(
                         layer,
                         upper_label,
-                        f"{kind}: {upper_label}",
+                        f"{kind}：{upper_label}",
                         upper_status,
                         min(0.95, confidence),
                         min(1.0, importance + layer * 0.02),
@@ -2409,6 +2531,11 @@ class NeuralMemory:
             ("should", "should not"),
             ("uses", "does not use"),
             ("allows", "does not allow"),
+            ("喜欢", "不喜欢"),
+            ("需要", "不需要"),
+            ("应该", "不应该"),
+            ("使用", "不使用"),
+            ("允许", "不允许"),
             ("always", "never"),
             ("prefer", "avoid"),
         ]
@@ -2432,7 +2559,7 @@ class NeuralMemory:
                     neuron_id,
                     "possible_conflict",
                     "warning",
-                    f"Possible conflict with {peer['id']} (lexical overlap {shared:.2f}); compare the original evidence manually.",
+                    f"可能与 {peer['id']} 冲突（词面重叠 {shared:.2f}）；请人工比较原始证据。",
                 )
 
     @staticmethod
@@ -2494,7 +2621,7 @@ class NeuralMemory:
             source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             full_token_estimate += rough_tokens(content)
             copied_bytes += len(content.encode("utf-8"))
-            summary = f"mdkb {entry_type}: {title} " + " ".join(
+            summary = f"mdkb {entry_type}：{title} " + " ".join(
                 "#" + tag for tag in tags
             )
             representation = json.dumps(
@@ -2579,7 +2706,7 @@ class NeuralMemory:
             for tag in grouping_tags:
                 row = self._find_named(2, tag)
                 topic_id = row["id"] if row else self._create_neuron(
-                    2, tag, f"mdkb tag cluster #{tag}", "confirmed", 0.95, 0.75
+                    2, tag, f"mdkb 标签集群 #{tag}", "confirmed", 0.95, 0.75
                 )
                 self._connect(neuron_id, topic_id, "mdkb_tag", 0.88)
 
@@ -2654,7 +2781,7 @@ class NeuralMemory:
                 self._encode(f"{entry['title']} {entry['type']} {' '.join(entry['tags'])} {full}"),
                 separators=(",", ":"),
             )
-            summary = f"mdkb {entry['type']}: {entry['title']} " + " ".join(
+            summary = f"mdkb {entry['type']}：{entry['title']} " + " ".join(
                 "#" + str(tag) for tag in entry["tags"]
             )
             if existing:
@@ -2698,7 +2825,7 @@ class NeuralMemory:
                 topic = str(tag)
                 row = self._find_named(2, topic)
                 topic_id = row["id"] if row else self._create_neuron(
-                    2, topic, f"mdkb tag cluster #{topic}", "confirmed", 0.95, 0.75
+                    2, topic, f"mdkb 标签集群 #{topic}", "confirmed", 0.95, 0.75
                 )
                 self._connect(neuron_id, topic_id, "mdkb_tag", 0.88)
 
@@ -2879,25 +3006,11 @@ class NeuralMemory:
         activated: list[ActivatedNeuron],
     ) -> float:
         l1 = [item for item in activated if item.layer == 1]
-        if isinstance(self.encoder, HashEncoder):
-            return l1[0].activation if l1 else 0.0
-        supported_semantic = max(
-            (
-                item.vector_score
-                for item in l1
-                if item.bm25_score > 0.0 or item.lexical_score > 0.0
-            ),
-            default=0.0,
-        )
-        semantic_only = max((item.vector_score for item in l1), default=0.0)
-        # A semantic-only match needs a margin above the configured gate.
-        # This preserves genuine paraphrases while rejecting isolated model
-        # similarities that have no lexical support in the active corpus.
-        return max(supported_semantic, semantic_only - 0.15)
+        return l1[0].activation if l1 else 0.0
 
     def probe(self, query: str) -> tuple[bool, float, list[ActivatedNeuron]]:
         activated = self.activate(query)
-        gate_score = self._recall_gate_score(activated)
+        peak = self._recall_gate_score(activated)
         threshold = float(getattr(self.encoder, "gate_threshold", 0.06))
         family_routing = self.concept_family_routes(query)
         l3_route_peak = max(
@@ -2915,16 +3028,16 @@ class NeuralMemory:
             family_routing["has_confirmed_families"]
             and not family_routing["used"]
             and (
-                gate_score < threshold
+                peak < threshold
                 or l3_route_peak < l3_route_threshold
             )
         ):
             fallback = self.activate(query, use_family_routing=False)
             fallback_score = self._recall_gate_score(fallback)
-            if fallback_score > gate_score:
+            if fallback_score > peak:
                 activated = fallback
-                gate_score = fallback_score
-        return gate_score >= threshold, gate_score, activated
+                peak = fallback_score
+        return peak >= threshold, peak, activated
 
     def _topic_memory_ids(
         self, activated: list[ActivatedNeuron], query: str = ""
@@ -2980,7 +3093,7 @@ class NeuralMemory:
                 if route[2] >= peak * 0.80
             ]
         route_ids = [route[0] for route in routes]
-        if any(token in query.casefold() for token in ("continue", "resume")):
+        if any(token in query.casefold() for token in ("继续", "continue", "resume")):
             for _, route_label, _ in routes:
                 parent_label = TOPIC_PARENTS.get(route_label)
                 parent = self._find_named(3, parent_label) if parent_label else None
@@ -3291,7 +3404,7 @@ class NeuralMemory:
             "SELECT id FROM neurons WHERE layer=1 AND status='proposed'"
         ):
             self._issue(
-                row["id"], "needs_review", "info", "Proposed atomic memory has not been confirmed by the user."
+                row["id"], "needs_review", "info", "候选原子记忆尚未由用户确认。"
             )
         for row in self.db.execute(
             """SELECT id,expires_at FROM neurons
@@ -3303,7 +3416,7 @@ class NeuralMemory:
                 row["id"],
                 "expired",
                 "warning",
-                f"Expiry date {row['expires_at']} has passed; verify it before marking it stale or writing a replacement.",
+                f"有效期 {row['expires_at']} 已到；应核实后标记 stale 或写入新版。",
             )
         for relation in self.db.execute(
             "SELECT * FROM memory_relations WHERE status='pending'"
@@ -3317,7 +3430,7 @@ class NeuralMemory:
                         relation["source_id"],
                         "broken_relation",
                         "critical",
-                        f"The {role} neuron {neuron_id} for relation {relation['id']} does not exist.",
+                        f"关系 {relation['id']} 的 {role} 神经元 {neuron_id} 不存在。",
                     )
         self.db.commit()
         return {
@@ -3396,6 +3509,9 @@ class NeuralMemory:
                 "name": self.encoder.name,
                 "dimensions": self.encoder.dimensions,
                 "gate_threshold": float(getattr(self.encoder, "gate_threshold", 0.06)),
+                "family_gate_threshold": float(
+                    getattr(self.encoder, "family_gate_threshold", 0.23)
+                ),
             },
             "layers": layers,
             "statuses": statuses,
@@ -3535,37 +3651,37 @@ class NeuralMemory:
     @staticmethod
     def _preserved_user_notes(path: Path) -> str:
         if not path.exists():
-            return "\nAdd human notes here. Notes are never ingested automatically.\n"
+            return "\n在这里添加人工批注。批注不会自动进入记忆核心。\n"
         match = USER_NOTES_RE.search(path.read_text(encoding="utf-8"))
-        return match.group(1) if match else "\nAdd human notes here.\n"
+        return match.group(1) if match else "\n在这里添加人工批注。\n"
 
     @staticmethod
     def _narrative(rows: list[sqlite3.Row]) -> str:
-        statements = [row["summary"].strip().rstrip(".") for row in rows if row["summary"].strip()]
+        statements = [row["summary"].strip().rstrip("。") for row in rows if row["summary"].strip()]
         if not statements:
-            return "There are not enough confirmed memories to form a narrative yet."
-        connectors = ["Currently, ", "Additionally, ", "In a later record, ", "Meanwhile, ", "Overall, "]
+            return "当前没有足够的已确认记忆形成连续说明。"
+        connectors = ["目前，", "此外，", "在后续记录中，", "同时，", "综合来看，"]
         paragraphs: list[str] = []
         for index in range(0, len(statements), 3):
             group = statements[index : index + 3]
             sentence = "".join(
-                (connectors[(index + offset) % len(connectors)] if offset == 0 else "; ")
+                (connectors[(index + offset) % len(connectors)] if offset == 0 else "；")
                 + statement
                 for offset, statement in enumerate(group)
             )
-            paragraphs.append(sentence + ".")
+            paragraphs.append(sentence + "。")
         return "\n\n".join(paragraphs)
 
     @serialized_write
     def sync_obsidian_notes(self) -> dict[str, int]:
         """Turn meaningful USER-NOTES into review proposals, never direct memories."""
         discovered = created = 0
-        topic_dir = self.obsidian_dir / "topics"
+        topic_dir = self.obsidian_dir / "主题"
         if not topic_dir.exists():
             return {"discovered": 0, "created": 0, "pending": 0}
         placeholders = {
-            "Add human notes here.",
-            "Add human notes here. Notes are never ingested automatically.",
+            "在这里添加人工批注。",
+            "在这里添加人工批注。批注不会自动进入记忆核心。",
         }
         for page in sorted(topic_dir.glob("*.md")):
             page_text = page.read_text(encoding="utf-8")
@@ -3606,10 +3722,10 @@ class NeuralMemory:
 
     @serialized_write
     def sync_obsidian_reviews(self) -> dict[str, object]:
-        """Apply explicit review checkboxes from the generated maintenance page."""
+        """读取维护中心中由用户明确勾选的记忆审核决定。"""
         maintenance_pages = (
-            self.obsidian_dir / "99 Maintenance.md",
             self.obsidian_dir / "99 维护中心.md",
+            self.obsidian_dir / "99 Maintenance.md",
         )
         page = next((item for item in maintenance_pages if item.is_file()), None)
         if page is None:
@@ -3618,6 +3734,7 @@ class NeuralMemory:
                 "needs_revision": 0,
                 "rejected": 0,
                 "concepts_confirmed": 0,
+                "concepts_needs_revision": 0,
                 "concepts_rejected": 0,
                 "concepts_merged": 0,
                 "concepts_kept_distinct": 0,
@@ -3643,6 +3760,7 @@ class NeuralMemory:
             "needs_revision": 0,
             "rejected": 0,
             "concepts_confirmed": 0,
+            "concepts_needs_revision": 0,
             "concepts_rejected": 0,
             "concepts_merged": 0,
             "concepts_kept_distinct": 0,
@@ -3655,7 +3773,7 @@ class NeuralMemory:
         for neuron_id, actions in decisions.items():
             unique_actions = list(dict.fromkeys(actions))
             if len(unique_actions) != 1:
-                errors.append(f"{neuron_id}: select exactly one review option")
+                errors.append(f"{neuron_id}：必须且只能选择一个审核选项")
                 continue
             row = self.db.execute(
                 "SELECT status FROM neurons WHERE id=? AND layer=1", (neuron_id,)
@@ -3674,7 +3792,7 @@ class NeuralMemory:
                     neuron_id,
                     "needs_revision",
                     "warning",
-                    "Human reviewer marked this proposed memory as needing revision in Obsidian.",
+                    "人工审核在 Obsidian 中将此候选记忆标记为需要修改。",
                 )
                 result["needs_revision"] = int(result["needs_revision"]) + 1
         for concept_id, actions in concept_decisions.items():
@@ -3683,7 +3801,28 @@ class NeuralMemory:
                 errors.append(f"{concept_id}: select exactly one concept review option")
                 continue
             action = unique_actions[0]
-            if not self.review_emergent_concept(concept_id, action):
+            concept = self.db.execute(
+                "SELECT label FROM neurons WHERE id=? AND layer=3",
+                (concept_id,),
+            ).fetchone()
+            if not concept:
+                continue
+            if action == "revise":
+                self._issue(
+                    concept_id,
+                    "l3_needs_revision",
+                    "warning",
+                    "人工审核在 Obsidian 中将此 L3 概念标记为需要修改。",
+                )
+                result["concepts_needs_revision"] = int(
+                    result["concepts_needs_revision"]
+                ) + 1
+                continue
+            if str(concept["label"]).startswith("Emergent Concept "):
+                changed = self.review_emergent_concept(concept_id, action)
+            else:
+                changed = self.review_l3_concept(concept_id, action)
+            if not changed:
                 continue
             key = "concepts_confirmed" if action == "confirm" else "concepts_rejected"
             result[key] = int(result[key]) + 1
@@ -3691,7 +3830,7 @@ class NeuralMemory:
             unique_actions = list(dict.fromkeys(actions))
             if len(unique_actions) != 1:
                 errors.append(
-                    f"{review_id}: select exactly one duplicate-concept review option"
+                    f"{review_id}：合并左侧、合并右侧、保持独立只能选择一个"
                 )
                 continue
             action = unique_actions[0]
@@ -3737,7 +3876,7 @@ class NeuralMemory:
                 f"obsidian-review:{proposal['page_path']}",
                 topics=topics,
                 confirmed=True,
-                domain="Obsidian human maintenance",
+                domain="Obsidian Manual Maintenance",
             )
         status = "accepted" if decision == "accept" else "rejected"
         self.db.execute(
@@ -3751,9 +3890,9 @@ class NeuralMemory:
     @serialized_write
     def compile_obsidian(self) -> dict[str, object]:
         """Compile human-readable views that are explicitly excluded from ingestion."""
-        topic_dir = self.obsidian_dir / "topics"
+        topic_dir = self.obsidian_dir / "主题"
         topic_dir.mkdir(parents=True, exist_ok=True)
-        family_dir = self.obsidian_dir / "families"
+        family_dir = self.obsidian_dir / "概念家族"
         family_dir.mkdir(parents=True, exist_ok=True)
         relation_dirs = {
             4: self.obsidian_dir / "relations" / "procedures",
@@ -3837,11 +3976,11 @@ class NeuralMemory:
                 f"- L{row['layer']} [[{relation_pages_by_id[row['id']].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{row['label']}]]"
                 for row in related
                 if row["id"] in relation_pages_by_id
-            ) or "- No upper-layer relationships"
+            ) or "- 暂无上层关系"
             memory_lines = "\n".join(
-                f"- [[vault/memories/{row['id']}|{row['id']}]] - {compact(row['label'], 80)}"
+                f"- [[vault/memories/{row['id']}|{row['id']}]] — {compact(row['label'], 80)}"
                 + (
-                    f" - [[vault/evidence/{row['evidence_id']}|evidence]]"
+                    f" · [[vault/evidence/{row['evidence_id']}|evidence]]"
                     if row["evidence_id"]
                     else ""
                 )
@@ -3858,13 +3997,13 @@ class NeuralMemory:
                 "---\n\n"
                 f"# {concept['label']}\n\n"
                 "<!-- GENERATED:START -->\n"
-                "## Current understanding\n\n"
+                "## 当前理解\n\n"
                 f"{self._narrative(atoms)}\n\n"
                 "## Linked Memories\n\n"
                 f"{memory_lines}\n\n"
-                "## Upper-layer relationships\n\n"
+                "## 上层关系\n\n"
                 f"{related_lines}\n\n"
-                "## Sources\n\n"
+                "## 来源\n\n"
                 + "\n".join(f"- `{source}`" for source in sources)
                 + "\n<!-- GENERATED:END -->\n\n"
                 "<!-- USER-NOTES:START -->"
@@ -3875,20 +4014,29 @@ class NeuralMemory:
             generated.append(page)
 
         family_generated: list[Path] = []
+        family_pages_by_id: dict[str, Path] = {}
         grouped_concept_ids: set[str] = set()
         for family in self.concept_families():
-            page = family_dir / f"{safe_filename(str(family['label']))}.md"
+            display_label = self._family_display_name(family)
+            # Use the readable family name for the generated filename as well as the
+            # page title, so Obsidian's file-list title is useful instead of an ID.
+            page = family_dir / f"{safe_filename(display_label)}.md"
             member_lines = "\n".join(
-                f"- [[topics/{safe_filename(str(member['label']))}|{member['label']}]]"
+                f"- [[主题/{safe_filename(str(member['label']))}|{member['label']}]]"
                 for member in family["members"]
             ) or "- No active member concepts"
             shared_relation_lines = "\n".join(
                 f"- L{relation['layer']} "
                 f"[[{relation_pages_by_id[relation['id']].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{relation['label']}]] "
-                f"(shared by {relation['member_count']} member concepts)"
+                f"（由 {relation['member_count']} 个成员概念共享）"
                 for relation in family["shared_relations"]
                 if relation["id"] in relation_pages_by_id
-            ) or "- No L4/L5 relationship is shared by multiple members"
+            ) or "- 当前没有被多个成员共同使用的 L4/L5 关系"
+            review_link = (
+                "- [[99 维护中心|前往维护中心审核]]\n\n"
+                if family["status"] == "proposed"
+                else ""
+            )
             page.write_text(
                 "---\n"
                 "view_type: compiled-concept-family\n"
@@ -3898,16 +4046,19 @@ class NeuralMemory:
                 f"family_id: {family['id']}\n"
                 f"status: {family['status']}\n"
                 "---\n\n"
-                f"# {family['label']}\n\n"
-                "L3F is a grouping and attention layer. It does not merge its "
-                "member L3 concepts and does not renumber L4-L6.\n\n"
-                "## Member concepts\n\n"
+                f"# {display_label}\n\n"
+                "L3F 是分组与注意力层；它不会合并成员 L3，也不会改变 L4–L6 的编号。\n\n"
+                "## 当前状态\n\n"
+                f"- 状态：`{family['status']}`\n"
+                f"{review_link}"
+                "## 成员概念\n\n"
                 f"{member_lines}\n\n"
-                "## Shared upper-layer relationships\n\n"
+                "## 共享的上层关系\n\n"
                 f"{shared_relation_lines}\n",
                 encoding="utf-8",
             )
             family_generated.append(page)
+            family_pages_by_id[str(family["id"])] = page
             if family["status"] == "confirmed":
                 grouped_concept_ids.update(
                     str(member["id"]) for member in family["members"]
@@ -3921,7 +4072,7 @@ class NeuralMemory:
                 f"- [[{topic_pages_by_id[row['id']].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{row['label']}]]"
                 for row in related_topics
                 if row["id"] in topic_pages_by_id
-            ) or "- No linked topics"
+            ) or "- 暂无关联主题"
             relation_type = "Procedure" if relation["layer"] == 4 else "Persona / stable model"
             page.write_text(
                 "---\n"
@@ -3932,9 +4083,9 @@ class NeuralMemory:
                 f"layer: {relation['layer']}\n"
                 "---\n\n"
                 f"# {relation['label']}\n\n"
-                "## Relation type\n\n"
+                "## 关系类型\n\n"
                 f"L{relation['layer']} {relation_type}\n\n"
-                "## Related topics\n\n"
+                "## 关联主题\n\n"
                 f"{topic_lines}\n",
                 encoding="utf-8",
             )
@@ -3975,6 +4126,7 @@ class NeuralMemory:
                 continue
             page.unlink()
             stale_family_removed += 1
+
         inbox = self.maintenance_inbox()
         proposals = self.annotation_proposals()
         proposed_memories = self.db.execute(
@@ -3984,130 +4136,99 @@ class NeuralMemory:
                ORDER BY n.created_at,n.id"""
         ).fetchall()
         proposed_memory_lines = "\n".join(
-            f"- [[vault/memories/{row['id']}|{row['id']}]] - {compact(row['label'], 100)}"
+            f"- [[vault/memories/{row['id']}|{row['id']}]] — {compact(row['label'], 100)}"
             + (
-                f" - [[vault/evidence/{row['evidence_id']}|evidence]]"
+                f" · [[vault/evidence/{row['evidence_id']}|evidence]]"
                 if row["evidence_id"]
                 else ""
             )
-            + f"\n  - [ ] Confirm <!-- review:confirm:{row['id']} -->"
-            + f"\n  - [ ] Needs revision <!-- review:revise:{row['id']} -->"
-            + f"\n  - [ ] Incorrect / reject <!-- review:reject:{row['id']} -->"
+            + f"\n  - [ ] 确认 <!-- review:confirm:{row['id']} -->"
+            + f"\n  - [ ] 需要修改 <!-- review:revise:{row['id']} -->"
+            + f"\n  - [ ] 错误／拒绝 <!-- review:reject:{row['id']} -->"
             for row in proposed_memories
-        ) or "- No proposed memories"
-        emergent_concepts = self.db.execute(
+        ) or "- 当前没有待审核记忆"
+        l3_review_concepts = self.db.execute(
             """SELECT * FROM neurons
                WHERE layer=3 AND status='proposed'
-                 AND label LIKE 'Emergent Concept %'
                ORDER BY label"""
         ).fetchall()
-        concept_sections: list[str] = []
-        for concept in emergent_concepts:
-            members = self.db.execute(
-                """SELECT n.id,n.label,n.summary
-                   FROM synapses s JOIN neurons n ON n.id=s.source_id
-                   WHERE s.target_id=? AND s.relation='emergent_member_of'
-                     AND n.layer=1
-                   ORDER BY n.created_at,n.id""",
-                (concept["id"],),
-            ).fetchall()
-            member_links = "\n".join(
-                f"    - [[vault/memories/{row['id']}|{row['id']}]] — {compact(row['label'], 90)}"
-                for row in members
-            ) or "    - No active supporting memories"
-            concept_sections.append(
-                f"- `{concept['id']}` **{concept['label']}** "
-                f"(support: {len(members)}, stability: {float(concept['stability']):.2f})\n"
-                f"  - {compact(concept['summary'], 180)}\n"
-                "  - Supporting L1 traces:\n"
-                f"{member_links}\n"
-                f"  - [ ] Confirm concept and connections <!-- concept-review:confirm:{concept['id']} -->\n"
-                f"  - [ ] Reject concept and suppress this exact pattern <!-- concept-review:reject:{concept['id']} -->"
+        l3_concept_sections: list[str] = []
+        for concept in l3_review_concepts:
+            topic_page = topic_pages_by_id.get(str(concept["id"]))
+            topic_link = (
+                f"[[{topic_page.relative_to(self.obsidian_dir).with_suffix('').as_posix()}|{concept['label']}]]"
+                if topic_page
+                else str(concept["label"])
             )
-        emergent_concept_lines = (
-            "\n".join(concept_sections)
-            if concept_sections
-            else "- No emergent semantic concepts awaiting review"
-        )
-        duplicate_sections: list[str] = []
-        for duplicate in self.concept_duplicate_candidates():
-            left = self._find_concept_by_key(str(duplicate["left_key"]))
-            right = self._find_concept_by_key(str(duplicate["right_key"]))
-            if not left or not right:
-                continue
-            left_members = self._related_atoms(left["id"])
-            right_members = self._related_atoms(right["id"])
-            duplicate_sections.append(
-                f"- `{duplicate['id']}` "
-                f"[[topics/{safe_filename(str(left['label']))}|{left['label']}]] ↔ "
-                f"[[topics/{safe_filename(str(right['label']))}|{right['label']}]]\n"
-                f"  - Combined: {float(duplicate['combined_score']):.2f}; "
-                f"prototype: {float(duplicate['vector_score']):.2f}; "
-                f"member overlap: {float(duplicate['member_overlap']):.2f}; "
-                f"name: {float(duplicate['label_score']):.2f}\n"
-                f"  - Left supporting L1: {len(left_members)}; "
-                f"right supporting L1: {len(right_members)}\n"
-                f"  - [ ] Merge into left; keep right as an alias "
-                f"<!-- concept-duplicate-review:merge-left:{duplicate['id']} -->\n"
-                f"  - [ ] Merge into right; keep left as an alias "
-                f"<!-- concept-duplicate-review:merge-right:{duplicate['id']} -->\n"
-                f"  - [ ] Keep distinct and suppress future prompts for this pair "
-                f"<!-- concept-duplicate-review:distinct:{duplicate['id']} -->"
+            support_count = len(self._related_atoms(concept["id"]))
+            support_links = "\n".join(
+                f"  - [[vault/memories/{atom['id']}|{atom['id']}]] — {compact(atom['label'], 100)}"
+                for atom in self._related_atoms(concept["id"])
+            ) or "  - 当前没有可用的 L1 支撑"
+            l3_concept_sections.append(
+                f"- {topic_link}（`{concept['id']}`，当前状态：`{concept['status']}`，L1 支撑：{support_count}）\n"
+                f"  - L1 支撑记录：\n{support_links}\n"
+                f"  - [ ] 确认 L3 概念 <!-- concept-review:confirm:{concept['id']} -->\n"
+                f"  - [ ] 需要修改 <!-- concept-review:revise:{concept['id']} -->\n"
+                f"  - [ ] 错误／拒绝 <!-- concept-review:reject:{concept['id']} -->"
             )
-        duplicate_lines = (
-            "\n".join(duplicate_sections)
-            if duplicate_sections
-            else "- No similar L3 concepts awaiting review"
+        l3_concept_lines = "\n".join(l3_concept_sections) or "- 当前没有可审核的 L3 概念"
+        legacy_duplicate_markers = "\n".join(
+            f"<!-- legacy concept-duplicate-review:merge-left:{item['id']} | "
+            f"concept-duplicate-review:merge-right:{item['id']} | "
+            f"concept-duplicate-review:distinct:{item['id']} -->"
+            for item in self.concept_duplicate_candidates()
         )
         family_sections: list[str] = []
         for family in self.concept_families(status="proposed"):
+            display_label = self._family_display_name(family)
             member_links = "\n".join(
-                f"    - [[topics/{safe_filename(str(member['label']))}|{member['label']}]]"
+                f"    - [[主题/{safe_filename(str(member['label']))}|{member['label']}]]"
                 for member in family["members"]
             )
             family_sections.append(
-                f"- `{family['id']}` **{family['label']}** "
-                f"(members: {len(family['members'])})\n"
+                f"- `{family['id']}` **{display_label}** "
+                f"（成员：{len(family['members'])}）\n"
                 f"{member_links}\n"
-                f"  - [ ] Confirm L3F family "
+                f"  - [[{family_pages_by_id[str(family['id'])].relative_to(self.obsidian_dir).with_suffix('').as_posix()}|打开 L3F 页面]]\n"
+                f"  - [ ] 确认 L3F 概念家族 "
                 f"<!-- concept-family-review:confirm:{family['id']} -->\n"
-                f"  - [ ] Reject this exact grouping "
+                f"  - [ ] 拒绝这一组家族关系 "
                 f"<!-- concept-family-review:reject:{family['id']} -->"
             )
         family_lines = (
             "\n".join(family_sections)
             if family_sections
-            else "- No L3F concept families awaiting review"
+            else "- 当前没有待审核的 L3F 概念家族"
         )
         issue_lines = "\n".join(
-            f"- `{item['id']}` **{item['severity']}** {item['kind']}: {item['details']}"
+            f"- `{item['id']}` **{item['severity']}** {item['kind']}：{item['details']}"
             for item in inbox["issues"]
-        ) or "- No open issues"
+        ) or "- 当前没有待处理问题"
         relation_lines = "\n".join(
-            f"- `{item['id']}` {item['source_id']} -> {item['relation']} -> {item['target_id']}"
+            f"- `{item['id']}` {item['source_id']} → {item['relation']} → {item['target_id']}"
             for item in inbox["relations"]
-        ) or "- No pending relationships"
+        ) or "- 当前没有待审核关系"
         proposal_lines = "\n".join(
-            f"- `{item['id']}` [[{item['page_path']}]]: {compact(str(item['notes']).replace(chr(10), ' '), 100)}"
+            f"- `{item['id']}` [[{item['page_path']}]]：{compact(str(item['notes']).replace(chr(10), ' '), 100)}"
             for item in proposals
-        ) or "- No pending human annotations"
-        maintenance_page = self.obsidian_dir / "99 Maintenance.md"
+        ) or "- 当前没有待审核人工批注"
+        maintenance_page = self.obsidian_dir / "99 维护中心.md"
         maintenance_page.write_text(
             "---\nview_type: maintenance-dashboard\ngenerated: true\ndo_not_ingest: true\n---\n\n"
-            "# Memory Maintenance Center\n\n"
-            "> This page only lists review candidates. Every write to core memory must be explicitly confirmed from the command line.\n\n"
-            "## Proposed memories\n\n" + proposed_memory_lines + "\n\n"
-            "Select exactly one option for each memory, then use the submit button below. Confirmation and rejection update the canonical status; needs revision keeps the candidate proposed and adds a maintenance issue. CLI fallback: `python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory sync-obsidian`.\n\n"
-            "```neural-memory-submit\nSubmit selected review decisions\n```\n\n"
-            "## Emergent semantic concepts\n\n" + emergent_concept_lines + "\n\n"
-            "These L3 candidates were derived from repeated confirmed L1 traces. Confirming preserves the concept and its connections; rejecting records a canonical suppression decision so the same support pattern is not regenerated.\n\n"
-            "## Similar L3 merge review\n\n" + duplicate_lines + "\n\n"
-            "The system never merges semantic concepts automatically. Merge decisions preserve the stable concept identity, the former name as an alias, and an auditable history. A distinct decision suppresses repeated prompts for the same pair.\n\n"
-            "## L3F concept-family review\n\n" + family_lines + "\n\n"
-            "L3F groups related L3 concepts for navigation and attention without merging them or changing the numbering of L4-L6. Confirmed families collapse their member links on the home page; rejected exact groupings stay suppressed.\n\n"
-            "## Human annotation candidates\n\n" + proposal_lines + "\n\n"
-            "## System issues\n\n" + issue_lines + "\n\n"
-            "## Pending relationships\n\n" + relation_lines + "\n",
+            "# 记忆维护中心\n\n"
+            "> 本页展示待处理候选和 L3F 审核。所有写回核心记忆的动作都必须在命令行明确确认。\n\n"
+            "## 待审核记忆\n\n" + proposed_memory_lines + "\n\n"
+            "每条记忆只能勾选一个选项，然后点击下方“提交审核决定”按钮。确认或拒绝会更新 canonical 状态；需要修改会保留候选并加入维护问题。命令行备用：`python3 neural_memory.py --root /绝对路径/记忆库 sync-obsidian`。\n\n"
+            "```neural-memory-submit\n提交审核决定\n```\n\n"
+            "## L3 概念审核\n\n" + l3_concept_lines + "\n\n"
+            "这里只显示尚未确认的 proposed L3。确认后会进入正式 L3 路由，并从审核列表中移除；拒绝会移除这一条 L3 连接，但不会删除其 L1 原始记忆。\n\n"
+            + legacy_duplicate_markers
+            + "\n## L3F 概念家族审核\n\n" + family_lines + "\n\n"
+            "L3F 只对相关 L3 进行分组和注意力导航，不会合并概念，也不会改变 L4–L6 的编号。确认后首页会折叠展示其成员；拒绝后不会重复生成完全相同的分组。\n\n"
+            "## 人工批注候选\n\n" + proposal_lines + "\n\n"
+            "## 系统问题\n\n" + issue_lines + "\n\n"
+            "## 待审核关系\n\n" + relation_lines + "\n",
             encoding="utf-8",
         )
 
@@ -4118,9 +4239,9 @@ class NeuralMemory:
                ORDER BY n.created_at,n.id"""
         ).fetchall()
         archive_lines = "\n".join(
-            f"- [[vault/memories/{row['id']}|{row['id']}]] - {compact(row['label'], 80)}"
+            f"- [[vault/memories/{row['id']}|{row['id']}]] — {compact(row['label'], 80)}"
             + (
-                f" - [[vault/evidence/{row['evidence_id']}|evidence]]"
+                f" · [[vault/evidence/{row['evidence_id']}|evidence]]"
                 if row["evidence_id"]
                 else ""
             )
@@ -4137,40 +4258,42 @@ class NeuralMemory:
         )
 
         stats = self.stats()
-        home = self.obsidian_dir / "00 Home.md"
-        confirmed_family_names = {
-            safe_filename(str(family["label"]))
+        home = self.obsidian_dir / "00 首页.md"
+        confirmed_family_links = "\n".join(
+            f"- [[{family_pages_by_id[str(family['id'])].relative_to(self.obsidian_dir).with_suffix('').as_posix()}]] — {self._family_display_name(family)}"
             for family in self.concept_families(status="confirmed")
-        }
-        family_links = "\n".join(
-            f"- [[families/{path.stem}]]"
-            for path in family_generated
-            if path.stem in confirmed_family_names
+            if str(family["id"]) in family_pages_by_id
         )
+        proposed_family_links = "\n".join(
+            f"- [[{family_pages_by_id[str(family['id'])].relative_to(self.obsidian_dir).with_suffix('').as_posix()}]] — {self._family_display_name(family)} · 待审核"
+            for family in self.concept_families(status="proposed")
+            if str(family["id"]) in family_pages_by_id
+        ) or "- 当前没有待审核的 L3F"
         ungrouped_links = "\n".join(
-            f"- [[topics/{page.stem}]]"
+            f"- [[主题/{page.stem}]]"
             for concept_id, page in topic_pages_by_id.items()
             if concept_id not in grouped_concept_ids
         )
         links = "\n".join(
-            item
-            for item in (family_links, ungrouped_links)
-            if item
-        ) or "- No topic or family pages"
+            item for item in (confirmed_family_links, ungrouped_links) if item
+        ) or "- 暂无主题或概念家族页面"
         home.write_text(
             "---\nview_type: compiled-memory\ngenerated: true\ndo_not_ingest: true\n---\n\n"
-            "# Memory System Home\n\n"
-            "## L3F family and topic navigation\n\n"
-            f"{links}\n- [[98 Archive]]\n- [[99 Maintenance]]\n\n"
-            "## System status\n\n"
-            f"- L0 raw evidence: {stats['layers'].get(0, 0)}\n"
+            "# 记忆系统首页\n\n"
+            "## L3F 概念家族与主题导航\n\n"
+            f"{links}\n- [[98 Archive]]\n- [[99 维护中心]]\n\n"
+            "## 待审核的 L3F\n\n"
+            f"{proposed_family_links}\n- [[99 维护中心|在维护中心审计和审核]]\n\n"
+            "## 系统状态\n\n"
+            f"- L0 原始证据：{stats['layers'].get(0, 0)}\n"
             + "\n".join(
-                f"- L{layer} neurons: {count}"
+                f"- L{layer} 神经元：{count}"
                 for layer, count in sorted(stats["layers"].items())
                 if layer != 0
             )
-            + f"\n- Synapses: {stats['synapses']}\n"
-            "\n> This directory is a rebuildable reading view and must never be re-ingested as memory fragments.\n",
+            + f"\n- 突触：{stats['synapses']}\n"
+            "\n> `vault/` 保存可审计的记忆与证据；概念身份、家族和审核决定等后台记录位于隐藏的 `.neural-memory/`。平时可从本页和维护中心阅读、审计记忆。\n"
+            "> 此目录是可重建的阅读视图，不作为记忆碎片重新摄入。\n",
             encoding="utf-8",
         )
         return {
@@ -4409,9 +4532,9 @@ def seed_demo(memory: NeuralMemory) -> None:
             topics,
             schemas,
             confirmed=True,
-            episode="Neural memory system design session",
-            procedures=["Progressive memory maintenance workflow"],
-            domain="AI memory and knowledge management",
+            episode="Neural Memory System Design",
+            procedures=["Progressive Memory Maintenance"],
+            domain="AI Memory and Knowledge Management",
         )
 
 
@@ -4614,7 +4737,7 @@ def main(argv: list[str] | None = None) -> int:
                 "peak_l1_activation": round(peak, 4),
                 "encoder": memory.stats()["encoder"],
                 "l3f_routing": memory.concept_family_routes(args.query),
-                "formula": "retention * governance * (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
+                "formula": "retention × governance × (0.45 vector + 0.45 BM25 + 0.10 lexical) + spread",
                 "activations": [
                     {
                         "id": item.id,
@@ -4710,6 +4833,7 @@ def main(argv: list[str] | None = None) -> int:
                     "needs_revision",
                     "rejected",
                     "concepts_confirmed",
+                    "concepts_needs_revision",
                     "concepts_rejected",
                     "concepts_merged",
                     "concepts_kept_distinct",

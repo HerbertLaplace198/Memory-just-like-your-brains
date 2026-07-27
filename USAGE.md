@@ -135,7 +135,7 @@ Layer mapping:
 | `--topic` | L3 | Semantic routing topic |
 | `--procedure` | L4 | Workflow or SOP |
 
-L3 topic and L4 procedure labels are English-only. Non-English labels are rejected before any canonical evidence is written. Rebuilding an older store skips legacy non-English L3/L4 labels. When an L1 memory is rejected, any L3/L4 nodes and synapses that are no longer reachable from another active L1 are pruned automatically.
+New L3 topic, L2 episode, L4 procedure, L5 schema, and L6 domain labels are English-only. Non-English labels are rejected before any canonical evidence is written; known Chinese aliases are normalized to English. The memory body itself may use any language. Rebuilding an older store skips legacy non-English structural labels. When an L1 memory is rejected, any L3/L4 nodes and synapses that are no longer reachable from another active L1 are pruned automatically.
 | `--schema` | L5 | Stable preference or model |
 | `--domain` | L6 | High-level awareness route |
 
@@ -308,7 +308,7 @@ stability, and the L1 traces that support it. Select exactly one concept action:
   supporting traces from recreating it.
 
 Submit the decision with the Obsidian plugin button or `sync-obsidian`.
-Decisions are stored as canonical Markdown under `vault/semantic-reviews/`.
+Decisions are stored as canonical Markdown under `.neural-memory/semantic-reviews/`.
 
 Likely duplicate L3 concepts appear in the same maintenance page. They are
 never merged automatically. Review them in Obsidian, or use:
@@ -321,8 +321,8 @@ python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
 ```
 
 The other decisions are `merge-left` and `merge-right`. Stable concept
-identities are stored under `vault/concept-identities/`; merge, alias, and
-distinct decisions are stored under `vault/concept-decisions/`.
+identities are stored under `.neural-memory/concept-identities/`; merge, alias,
+and distinct decisions are stored under `.neural-memory/concept-decisions/`.
 
 L3F concept families group three or more related L3 concepts without merging
 them or changing the numbering of L4-L6. Confirmed families collapse their
@@ -337,7 +337,7 @@ python3 neural_memory.py --root /ABSOLUTE/PATH/my-neural-memory \
 ```
 
 Use `concept-family reject` to suppress the exact grouping. Family identity
-and review state are stored under `vault/concept-families/`.
+and review state are stored under `.neural-memory/concept-families/`.
 
 After confirmation, L3F participates in retrieval. The coarse pass compares
 family representatives with independent L3 concepts. A matched family expands
@@ -345,6 +345,10 @@ its own member L3 concepts while independent L3 remains searchable; members of
 other families continue to be represented by their family. If no family or
 independent L3 supplies a safe route, Neural Memory falls back to full L3
 search. Inspect the decision with `explain` or the MCP `l3f_routing` field.
+
+The L3F threshold is separate from the L1 awareness threshold. Configure it as
+`family_gate_threshold` in the encoder JSON; recalibrate it with representative
+positive family queries and unrelated negative queries when the corpus changes.
 
 Write human notes only inside the `USER-NOTES` block. Synchronize them into review candidates:
 

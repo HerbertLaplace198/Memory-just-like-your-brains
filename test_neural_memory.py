@@ -179,7 +179,7 @@ class NeuralMemoryTests(unittest.TestCase):
             self.memory.remember(
                 "A preference with a non-English topic.",
                 "test",
-                topics=["\u8bba\u6587"],
+                topics=["非英语主题"],
             )
         with self.assertRaisesRegex(ValueError, "procedures must use English-only labels"):
             self.memory.remember(
@@ -286,15 +286,15 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertEqual(linked, set(memory_ids))
 
         self.memory.compile_obsidian()
-        maintenance = self.memory.obsidian_dir / "99 Maintenance.md"
+        maintenance = self.memory.obsidian_dir / "99 维护中心.md"
         text = maintenance.read_text(encoding="utf-8")
-        self.assertIn("## Emergent semantic concepts", text)
+        self.assertIn("## L3 概念审核", text)
         self.assertIn(concept["id"], text)
         for memory_id in memory_ids:
             self.assertIn(memory_id, text)
         text = text.replace(
-            f"- [ ] Confirm concept and connections <!-- concept-review:confirm:{concept['id']} -->",
-            f"- [x] Confirm concept and connections <!-- concept-review:confirm:{concept['id']} -->",
+            f"  - [ ] 确认 L3 概念 <!-- concept-review:confirm:{concept['id']} -->",
+            f"  - [x] 确认 L3 概念 <!-- concept-review:confirm:{concept['id']} -->",
         )
         maintenance.write_text(text, encoding="utf-8")
 
@@ -449,11 +449,11 @@ class NeuralMemoryTests(unittest.TestCase):
         seed_demo(self.memory)
         result = self.memory.compile_obsidian()
         self.assertGreater(result["pages"], 1)
-        page = next((self.memory.obsidian_dir / "topics").glob("*.md"))
+        page = next((self.memory.obsidian_dir / "主题").glob("*.md"))
         text = page.read_text(encoding="utf-8")
         self.assertIn("do_not_ingest: true", text)
         text = text.replace(
-            "Add human notes here. Notes are never ingested automatically.",
+            "在这里添加人工批注。批注不会自动进入记忆核心。",
             "This human annotation must be preserved.",
         )
         page.write_text(text, encoding="utf-8")
@@ -473,12 +473,12 @@ class NeuralMemoryTests(unittest.TestCase):
             "Legacy labels must not create non-English generated relation pages.",
             "test",
             topics=["Memory"],
-            schemas=["旧的模型标签"],
+            schemas=["Legacy Model Label"],
             confirmed=True,
         )
 
         result = self.memory.compile_obsidian()
-        topic = (self.memory.obsidian_dir / "topics" / "Memory System.md").read_text(
+        topic = (self.memory.obsidian_dir / "主题" / "Memory System.md").read_text(
             encoding="utf-8"
         )
         procedure = self.memory.obsidian_dir / "relations" / "procedures" / "Review the evidence before publishing.md"
@@ -495,7 +495,7 @@ class NeuralMemoryTests(unittest.TestCase):
         )
         self.assertTrue(procedure.is_file())
         self.assertTrue(persona.is_file())
-        self.assertIn("[[topics/Memory System|Memory System]]", procedure.read_text(encoding="utf-8"))
+        self.assertIn("[[主题/Memory System|Memory System]]", procedure.read_text(encoding="utf-8"))
         self.assertFalse(
             (self.memory.obsidian_dir / "relations" / "personas" / "旧的模型标签.md").exists()
         )
@@ -564,7 +564,7 @@ class NeuralMemoryTests(unittest.TestCase):
             "Thesis progress has entered result verification.", "test", topics=["thesis"], confirmed=True
         )
         self.memory.compile_obsidian()
-        page = self.memory.obsidian_dir / "topics" / "Investment.md"
+        page = self.memory.obsidian_dir / "主题" / "Investment.md"
         text = page.read_text(encoding="utf-8")
         self.assertIn(f"[[vault/memories/{investment}|{investment}]]", text)
         self.assertIn("[[vault/evidence/", text)
@@ -578,7 +578,7 @@ class NeuralMemoryTests(unittest.TestCase):
             domain="private-routing-domain",
             confirmed=True,
         )
-        topic_dir = self.memory.obsidian_dir / "topics"
+        topic_dir = self.memory.obsidian_dir / "主题"
         topic_dir.mkdir(parents=True, exist_ok=True)
         stale = topic_dir / "Old Generated Topic.md"
         stale.write_text(
@@ -613,10 +613,10 @@ class NeuralMemoryTests(unittest.TestCase):
             topics=["Memory Governance"],
         )
         self.memory.compile_obsidian()
-        maintenance = (self.memory.obsidian_dir / "99 Maintenance.md").read_text(
+        maintenance = (self.memory.obsidian_dir / "99 维护中心.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("## Proposed memories", maintenance)
+        self.assertIn("## 待审核记忆", maintenance)
         self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", maintenance)
         self.assertIn("[[vault/evidence/", maintenance)
         self.assertIn(f"review:confirm:{neuron_id}", maintenance)
@@ -631,16 +631,17 @@ class NeuralMemoryTests(unittest.TestCase):
             "SELECT evidence_id FROM neurons WHERE id=?", (rejected_id,)
         ).fetchone()[0]
         self.memory.compile_obsidian()
-        page = self.memory.obsidian_dir / "99 Maintenance.md"
+        page = self.memory.obsidian_dir / "99 维护中心.md"
         text = page.read_text(encoding="utf-8")
         for action, neuron_id in (
             ("confirm", confirmed_id),
             ("revise", revise_id),
             ("reject", rejected_id),
         ):
+            label = "确认" if action == "confirm" else "需要修改" if action == "revise" else "错误／拒绝"
             text = text.replace(
-                f"- [ ] {'Confirm' if action == 'confirm' else 'Needs revision' if action == 'revise' else 'Incorrect / reject'} <!-- review:{action}:{neuron_id} -->",
-                f"- [x] {'Confirm' if action == 'confirm' else 'Needs revision' if action == 'revise' else 'Incorrect / reject'} <!-- review:{action}:{neuron_id} -->",
+                f"  - [ ] {label} <!-- review:{action}:{neuron_id} -->",
+                f"  - [x] {label} <!-- review:{action}:{neuron_id} -->",
             )
         page.write_text(text, encoding="utf-8")
         result = self.memory.sync_obsidian_reviews()
@@ -672,11 +673,11 @@ class NeuralMemoryTests(unittest.TestCase):
             episode="Review submission event",
         )
         self.memory.compile_obsidian()
-        page = self.memory.obsidian_dir / "99 Maintenance.md"
+        page = self.memory.obsidian_dir / "99 维护中心.md"
         page.write_text(
             page.read_text(encoding="utf-8").replace(
-                f"- [ ] Confirm <!-- review:confirm:{neuron_id} -->",
-                f"- [x] Confirm <!-- review:confirm:{neuron_id} -->",
+                f"  - [ ] 确认 <!-- review:confirm:{neuron_id} -->",
+                f"  - [x] 确认 <!-- review:confirm:{neuron_id} -->",
             ),
             encoding="utf-8",
         )
@@ -684,7 +685,7 @@ class NeuralMemoryTests(unittest.TestCase):
         with redirect_stdout(StringIO()):
             self.assertEqual(main(["--root", self.temp.name, "sync-obsidian"]), 0)
 
-        topic = (self.memory.obsidian_dir / "topics" / "Review.md").read_text(
+        topic = (self.memory.obsidian_dir / "主题" / "Review.md").read_text(
             encoding="utf-8"
         )
         self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", topic)
@@ -714,7 +715,7 @@ class NeuralMemoryTests(unittest.TestCase):
             topics=["investment"],
             confirmed=True,
         )
-        topic_dir = self.memory.obsidian_dir / "topics"
+        topic_dir = self.memory.obsidian_dir / "主题"
         topic_dir.mkdir(parents=True, exist_ok=True)
         lower = topic_dir / "investment.md"
         lower.write_text(
@@ -818,9 +819,9 @@ class NeuralMemoryTests(unittest.TestCase):
         before = self.memory.db.execute(
             "SELECT count(*) FROM neurons WHERE layer=1"
         ).fetchone()[0]
-        page = next((self.memory.obsidian_dir / "topics").glob("*.md"))
+        page = next((self.memory.obsidian_dir / "主题").glob("*.md"))
         text = page.read_text(encoding="utf-8").replace(
-            "Add human notes here. Notes are never ingested automatically.",
+            "在这里添加人工批注。批注不会自动进入记忆核心。",
             "Human note: review the maintenance inbox weekly.",
         )
         page.write_text(text, encoding="utf-8")
@@ -893,7 +894,7 @@ class NeuralMemoryTests(unittest.TestCase):
             self.assertEqual(proposed["status"], "proposed")
             self.assertEqual(row["status"], "proposed")
             self.assertTrue(proposed["obsidian_view_refreshed"])
-            topic_page = server.memory.obsidian_dir / "topics" / "Memory Governance.md"
+            topic_page = server.memory.obsidian_dir / "主题" / "Memory Governance.md"
             self.assertIn(proposed["id"], topic_page.read_text(encoding="utf-8"))
         finally:
             server.close()
@@ -933,7 +934,7 @@ class NeuralMemoryTests(unittest.TestCase):
             ).fetchone()[0]
             self.assertEqual(status, "proposed")
             self.assertTrue(first["obsidian_view_refreshed"])
-            topic_page = hook.memory.obsidian_dir / "topics" / "Memory Governance.md"
+            topic_page = hook.memory.obsidian_dir / "主题" / "Memory Governance.md"
             self.assertIn(
                 first["created_proposals"][0],
                 topic_page.read_text(encoding="utf-8"),

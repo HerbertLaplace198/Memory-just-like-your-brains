@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Move semantic review, concept identity, duplicate-decision, and L3F family
+  records into hidden `<root>/.neural-memory/` backend storage.
+- Require English structural labels for new memory writes while preserving the
+  original language of memory bodies; normalize known Chinese aliases before
+  indexing.
+- Improve multilingual L3F triggering with canonical English aliases and add
+  the separately calibrated `family_gate_threshold` setting.
+
 ## 1.4.0 - 2026-07-26
 
 - Promote confirmed L3F families into the first-stage semantic router.

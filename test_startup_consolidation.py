@@ -7,11 +7,47 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+
 from mcp_server import MCPServer
 from neural_memory import HashEncoder, NeuralMemory
 
 
 class StartupConsolidationTests(unittest.TestCase):
+    def test_new_memory_uses_english_structural_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = NeuralMemory(Path(temporary), HashEncoder())
+            try:
+                memory.remember(
+                    "这段正文可以继续使用中文。",
+                    "test",
+                    topics=["论文"],
+                    schemas=["User Preference"],
+                    episode="Thesis Review",
+                    procedures=["Review Workflow"],
+                    domain="Academic Work",
+                    confirmed=True,
+                )
+                labels = {
+                    row["label"]
+                    for row in memory.db.execute(
+                        "SELECT label FROM neurons WHERE layer > 1"
+                    )
+                }
+                self.assertIn("Thesis", labels)
+                self.assertIn("Thesis Review", labels)
+                self.assertIn("Review Workflow", labels)
+                self.assertIn("User Preference", labels)
+                self.assertIn("Academic Work", labels)
+                with self.assertRaises(ValueError):
+                    memory.remember(
+                        "正文",
+                        "test",
+                        topics=["Thesis"],
+                        domain="中文领域",
+                    )
+            finally:
+                memory.close()
+
     def test_consolidation_runs_only_after_twenty_four_hours(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             memory = NeuralMemory(Path(temporary), HashEncoder())
@@ -137,7 +173,7 @@ class StableConceptIdentityTests(unittest.TestCase):
                 self.assertEqual(active, 2)
                 memory.compile_obsidian()
                 maintenance = (
-                    memory.obsidian_dir / "99 Maintenance.md"
+                    memory.obsidian_dir / "99 维护中心.md"
                 ).read_text(encoding="utf-8")
                 self.assertIn("concept-duplicate-review:merge-left", maintenance)
                 self.assertIn("concept-duplicate-review:distinct", maintenance)
@@ -245,10 +281,8 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                 self.assertTrue(memory.review_concept_family(family_id, "confirm"))
                 memory.compile_obsidian()
 
-                family_page = (
-                    memory.obsidian_dir
-                    / "families"
-                    / f"{family['label']}.md"
+                family_page = next(
+                    (memory.obsidian_dir / "概念家族").glob("L3F · *.md")
                 )
                 self.assertTrue(family_page.is_file())
                 self.assertIn(
@@ -259,11 +293,15 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                     "Risk Review",
                     family_page.read_text(encoding="utf-8"),
                 )
-                home = (memory.obsidian_dir / "00 Home.md").read_text(
+                self.assertNotIn(
+                    "[[99 维护中心|前往维护中心审核]]",
+                    family_page.read_text(encoding="utf-8"),
+                )
+                home = (memory.obsidian_dir / "00 首页.md").read_text(
                     encoding="utf-8"
                 )
-                self.assertIn(f"[[families/{family['label']}]]", home)
-                self.assertNotIn("[[topics/Portfolio Risk]]", home)
+                self.assertIn(f"[[概念家族/{family_page.stem}]]", home)
+                self.assertNotIn("[[主题/Portfolio Risk]]", home)
 
                 memory.rebuild_index()
                 rebuilt = memory.concept_families(status="confirmed")
@@ -364,10 +402,17 @@ class ConceptFamilyLayerTests(unittest.TestCase):
             try:
                 family_id = memory.concept_families()[0]["id"]
                 memory.compile_obsidian()
-                maintenance = memory.obsidian_dir / "99 Maintenance.md"
+                family_page = next(
+                    (memory.obsidian_dir / "概念家族").glob("L3F · *.md")
+                )
+                self.assertIn(
+                    "[[99 维护中心|前往维护中心审核]]",
+                    family_page.read_text(encoding="utf-8"),
+                )
+                maintenance = memory.obsidian_dir / "99 维护中心.md"
                 text = maintenance.read_text(encoding="utf-8")
                 marker = (
-                    f"- [ ] Reject this exact grouping "
+                    f"- [ ] 拒绝这一组家族关系 "
                     f"<!-- concept-family-review:reject:{family_id} -->"
                 )
                 self.assertIn(marker, text)
