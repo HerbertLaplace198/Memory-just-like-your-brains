@@ -439,6 +439,17 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                         for index in range(1, 7)
                     ],
                 }
+                for family in (small, large):
+                    for member in family["members"]:
+                        memory._create_neuron(
+                            3,
+                            str(member["label"]),
+                            str(member["label"]),
+                            "confirmed",
+                            0.95,
+                            0.7,
+                            neuron_id=str(member["id"]),
+                        )
 
                 def fake_encode(text: str) -> list[float]:
                     if "Large family" in text:
@@ -472,6 +483,7 @@ class ConceptFamilyLayerTests(unittest.TestCase):
                         "_related_atoms",
                         side_effect=support,
                     ),
+                    patch.object(memory, "_is_routable_l3", return_value=True),
                     patch.object(memory, "_encode", side_effect=fake_encode),
                 ):
                     routing = memory.concept_family_routes("target phrase", limit=2)

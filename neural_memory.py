@@ -476,6 +476,8 @@ class NeuralMemory:
         self.db_path = self.root / "memory.sqlite3"
         self.vault_dir = self.root / "vault"
         self.backend_dir = self.root / ".neural-memory"
+        self.legacy_index_path = self.backend_dir / "index.sqlite"
+        self.legacy_index_marker_path = self.backend_dir / "legacy-index.sqlite.json"
         self.evidence_dir = self.vault_dir / "evidence"
         self.memory_dir = self.vault_dir / "memories"
         self.semantic_review_dir = self.backend_dir / "semantic-reviews"
@@ -493,6 +495,7 @@ class NeuralMemory:
         self.concept_decision_dir.mkdir(parents=True, exist_ok=True)
         self.concept_family_dir.mkdir(parents=True, exist_ok=True)
         self.rejected_dir.mkdir(parents=True, exist_ok=True)
+        self.legacy_index_status = self._prepare_database_path()
         self.db = sqlite3.connect(self.db_path)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
@@ -504,6 +507,85 @@ class NeuralMemory:
             self._upgrade_layer_schema()
             self._schema()
             self._register_encoder()
+
+    def _prepare_database_path(self) -> dict[str, object]:
+        """Keep ``memory.sqlite3`` canonical while preserving legacy indexes.
+
+        Older experiments left an ``.neural-memory/index.sqlite`` file behind.
+        It is never opened as the live store and is never deleted automatically.
+        If it is the only valid database, copy it atomically into the canonical
+        location; otherwise leave a machine-readable marker for maintenance.
+        """
+        status: dict[str, object] = {
+            "canonical_path": str(self.db_path.relative_to(self.root)),
+            "legacy_path": str(self.legacy_index_path.relative_to(self.root)),
+            "state": "absent",
+        }
+        if not self.legacy_index_path.exists():
+            return status
+
+        try:
+            legacy = sqlite3.connect(
+                f"{self.legacy_index_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+            )
+            try:
+                tables = sorted(
+                    str(row[0])
+                    for row in legacy.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                )
+                status["legacy_tables"] = tables
+                has_memory_schema = {"neurons", "synapses", "evidence"} <= set(tables)
+                if has_memory_schema:
+                    status["legacy_neuron_count"] = int(
+                        legacy.execute("SELECT count(*) FROM neurons").fetchone()[0]
+                    )
+            finally:
+                legacy.close()
+        except sqlite3.Error as exc:
+            status["state"] = "unreadable"
+            status["detail"] = str(exc)
+            self._write_legacy_index_marker(status)
+            return status
+
+        if self.db_path.exists():
+            status["state"] = (
+                "empty_legacy_ignored"
+                if not status.get("legacy_tables")
+                else "legacy_preserved_canonical_active"
+            )
+            self._write_legacy_index_marker(status)
+            return status
+
+        if not status.get("legacy_neuron_count") and "neurons" not in status.get("legacy_tables", []):
+            status["state"] = "unrecognized_legacy_ignored"
+            self._write_legacy_index_marker(status)
+            return status
+
+        temporary = self.root / f".memory.sqlite3.migrating-{uuid.uuid4().hex}"
+        source = sqlite3.connect(
+            f"{self.legacy_index_path.resolve().as_uri()}?mode=ro", uri=True
+        )
+        target = sqlite3.connect(temporary)
+        try:
+            source.backup(target)
+            target.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            target.close()
+            source.close()
+        os.replace(temporary, self.db_path)
+        status["state"] = "migrated_copy_from_legacy"
+        self._write_legacy_index_marker(status)
+        return status
+
+    def _write_legacy_index_marker(self, status: dict[str, object]) -> None:
+        payload = {**status, "recorded_at": now()}
+        self.legacy_index_marker_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     def close(self) -> None:
         self.db.close()
@@ -1044,6 +1126,17 @@ class NeuralMemory:
             (layer, label),
         ).fetchone()
 
+    def _l3_has_confirmed_support(self, concept_id: str) -> bool:
+        """Return whether an L3 can be routed through confirmed L1 evidence."""
+        return bool(self._related_atoms(concept_id, confirmed_only=True))
+
+    def _is_routable_l3(self, concept: sqlite3.Row) -> bool:
+        return (
+            int(concept["layer"]) == 3
+            and str(concept["status"]) == "confirmed"
+            and self._l3_has_confirmed_support(str(concept["id"]))
+        )
+
     @staticmethod
     def _topic_terms(text: str) -> set[str]:
         return {
@@ -1127,9 +1220,10 @@ class NeuralMemory:
         requested = list(dict.fromkeys(label for label in requested if label.strip()))
         concepts = self.db.execute(
             """SELECT * FROM neurons
-               WHERE layer=3 AND status NOT IN ('rejected','archived','stale')
+               WHERE layer=3 AND status='confirmed'
                ORDER BY label,id"""
         ).fetchall()
+        concepts = [concept for concept in concepts if self._is_routable_l3(concept)]
         if not concepts:
             return requested
 
@@ -1137,6 +1231,8 @@ class NeuralMemory:
         unmatched_requested: list[str] = []
         for label in requested:
             exact = self._find_named(3, label)
+            if exact is not None and not self._is_routable_l3(exact):
+                exact = None
             if exact:
                 matched[str(exact["id"])] = exact
             hint_matches = self._rank_topic_matches(label, concepts)
@@ -1555,6 +1651,30 @@ class NeuralMemory:
                 (stability, concept["id"]),
             )
 
+    def _refresh_l3_evidence_governance(self) -> int:
+        """Stale confirmed L3 nodes that have lost every confirmed L1 trace.
+
+        Staling preserves the concept ID, review history, and generated pages,
+        but removes the node from routing.  A later confirmed L1 with the same
+        topic reactivates the named L3 during indexing.
+        """
+        concepts = self.db.execute(
+            "SELECT id FROM neurons WHERE layer=3 AND status='confirmed'"
+        ).fetchall()
+        unsupported = [
+            str(concept["id"])
+            for concept in concepts
+            if not self._l3_has_confirmed_support(str(concept["id"]))
+        ]
+        if unsupported:
+            placeholders = ",".join("?" for _ in unsupported)
+            self.db.execute(
+                f"UPDATE neurons SET status='stale', stability=0.05 "
+                f"WHERE id IN ({placeholders})",
+                tuple(unsupported),
+            )
+        return len(unsupported)
+
     def _decay_plastic_synapses(
         self,
         reference: datetime | None = None,
@@ -1616,11 +1736,13 @@ class NeuralMemory:
     ) -> dict[str, int]:
         emergent = self._rebuild_emergent_concepts()
         self._refresh_semantic_stability()
+        stale_l3 = self._refresh_l3_evidence_governance()
         duplicate_candidates = self._refresh_concept_duplicate_candidates()
         concept_families = self._refresh_concept_families()
         decayed = self._decay_plastic_synapses(reference) if apply_decay else 0
         return {
             "emergent_concepts": emergent,
+            "stale_l3_without_confirmed_l1": stale_l3,
             "concept_duplicate_candidates": duplicate_candidates,
             "concept_families": concept_families,
             "decayed_synapses": decayed,
@@ -2396,11 +2518,23 @@ class NeuralMemory:
             status="confirmed",
             include_relations=False,
         )
+        routable_families: list[dict[str, object]] = []
+        for family in families:
+            members: list[dict[str, object]] = []
+            for member in family["members"]:
+                concept = self.db.execute(
+                    "SELECT * FROM neurons WHERE id=?", (member["id"],)
+                ).fetchone()
+                if concept is not None and self._is_routable_l3(concept):
+                    members.append(member)
+            if len(members) >= 3:
+                routable_families.append({**family, "members": members})
+        families = routable_families
         if not families:
             return {
                 "used": False,
                 "has_confirmed_families": False,
-                "reason": "no_confirmed_families",
+                "reason": "no_confirmed_families_with_l1_support",
                 "families": [],
                 "selected_concept_ids": [],
             }
@@ -3065,6 +3199,11 @@ class NeuralMemory:
         rows = self.db.execute(
             "SELECT * FROM neurons WHERE status='confirmed'"
         ).fetchall()
+        rows = [
+            row
+            for row in rows
+            if row["layer"] != 3 or self._is_routable_l3(row)
+        ]
         if use_family_routing and family_routing["has_confirmed_families"]:
             grouped_concept_ids = {
                 str(member["id"])
@@ -3804,6 +3943,13 @@ class NeuralMemory:
             "synchronous": self.db.execute("PRAGMA synchronous").fetchone()[0],
             "missing_evidence_ids": missing_evidence,
             "unreferenced_evidence_ids": unreferenced_evidence,
+            "database": {
+                "canonical_path": str(self.db_path.relative_to(self.root)),
+                "legacy_index": self.legacy_index_status,
+                "legacy_marker_path": str(
+                    self.legacy_index_marker_path.relative_to(self.root)
+                ) if self.legacy_index_marker_path.exists() else None,
+            },
             "stats": self.stats(),
         }
 
@@ -3836,16 +3982,24 @@ class NeuralMemory:
         self.db.commit()
         return {"records": len(records), "stats": self.stats()}
 
-    def _related_atoms(self, neuron_id: str, max_depth: int = 5) -> list[sqlite3.Row]:
-        """Return active L1 memories reached directly or through their L2 episode."""
+    def _related_atoms(
+        self,
+        neuron_id: str,
+        max_depth: int = 5,
+        confirmed_only: bool = True,
+    ) -> list[sqlite3.Row]:
+        """Return L1 support by following the lower-to-upper memory graph backwards."""
+        status_clause = "n.status='confirmed'" if confirmed_only else (
+            "n.status NOT IN ('rejected','archived')"
+        )
         return self.db.execute(
             """WITH RECURSIVE descendants(id,layer,depth) AS (
                    SELECT id,layer,0 FROM neurons WHERE id=?
                    UNION
                    SELECT n.id,n.layer,d.depth+1
                    FROM descendants d
-                   JOIN synapses s ON s.source_id=d.id
-                   JOIN neurons n ON n.id=s.target_id
+                   JOIN synapses s ON s.target_id=d.id
+                   JOIN neurons n ON n.id=s.source_id
                    WHERE n.layer<d.layer
                      AND d.depth<?
                      AND s.relation IN ('member_of','emergent_member_of','episode')
@@ -3853,7 +4007,7 @@ class NeuralMemory:
                SELECT DISTINCT n.*,e.source FROM descendants d
                JOIN neurons n ON n.id=d.id
                LEFT JOIN evidence e ON e.id=n.evidence_id
-               WHERE n.layer=1 AND n.status NOT IN ('rejected','archived')
+               WHERE n.layer=1 AND """ + status_clause + """
                ORDER BY n.created_at""",
             (neuron_id, max_depth),
         ).fetchall()
@@ -4150,7 +4304,9 @@ class NeuralMemory:
         generated: list[Path] = []
         topic_pages_by_id: dict[str, Path] = {}
         for concept in concepts:
-            atoms = self._related_atoms(concept["id"])
+            # Review pages may show proposed L1 cards, but retrieval, stability,
+            # and routing continue to call _related_atoms with confirmed_only.
+            atoms = self._related_atoms(concept["id"], confirmed_only=False)
             desired_name = f"{safe_filename(concept['label'])}.md"
             page = topic_dir / desired_name
             for existing in topic_dir.glob("*.md"):

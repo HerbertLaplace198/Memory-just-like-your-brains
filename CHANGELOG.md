@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.3 - 2026-07-27
+
+- Make `memory.sqlite3` the explicit canonical SQLite path. Detect a legacy
+  `.neural-memory/index.sqlite`, preserve it, and record whether it was ignored
+  or copied into the canonical path.
+- Correct L3-to-L1 evidence traversal. Only confirmed L3 nodes with at least
+  one confirmed L1 trace can participate in topic matching, activation, or L3F
+  routing; unsupported confirmed L3 nodes become recoverable `stale` nodes.
+- Add a runtime-release contract: the runnable app is a Git checkout of the
+  same tagged source that contains the full test suite.
+
 ## 1.5.2 - 2026-07-27
 
 - Restrict awareness, recall, reconsolidation, semantic stability, and L3F

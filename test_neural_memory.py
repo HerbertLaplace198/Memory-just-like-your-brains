@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import json
+import sqlite3
 import zipfile
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
@@ -692,7 +693,7 @@ class NeuralMemoryTests(unittest.TestCase):
             finally:
                 memory.close()
 
-    def test_confirmed_memory_upgrades_but_never_downgrades_topic_status(self):
+    def test_l3_without_confirmed_l1_becomes_stale_but_is_preserved(self):
         proposed = self.memory.remember(
             "Proposed memory system rule.", "test", topics=["memory"]
         )
@@ -719,7 +720,35 @@ class NeuralMemoryTests(unittest.TestCase):
             self.memory.db.execute(
                 "SELECT status FROM neurons WHERE id=?", (topic["id"],)
             ).fetchone()[0],
+            "stale",
+        )
+        restored = self.memory.remember(
+            "A later confirmed memory restores the same topic.",
+            "test",
+            topics=["Neural Memory"],
+            confirmed=True,
+        )
+        self.assertTrue(restored)
+        self.assertEqual(
+            self.memory.db.execute(
+                "SELECT status FROM neurons WHERE id=?", (topic["id"],)
+            ).fetchone()[0],
             "confirmed",
+        )
+
+    def test_l3_support_follows_l1_to_l3_edges(self):
+        memory_id = self.memory.remember(
+            "Confirmed evidence must be discoverable through its semantic topic.",
+            "test",
+            topics=["Memory Governance"],
+            confirmed=True,
+            episode="Support traversal test",
+        )
+        concept = self.memory._find_named(3, "Memory Governance")
+        self.assertIsNotNone(concept)
+        self.assertEqual(
+            {row["id"] for row in self.memory._related_atoms(concept["id"])},
+            {memory_id},
         )
 
     def test_topic_page_includes_episode_routed_l1_members_and_real_links(self):
@@ -1028,7 +1057,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.2")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.3")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
@@ -1124,6 +1153,52 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertTrue(report["healthy"])
         self.assertEqual(report["sqlite_integrity"], ["ok"])
         self.assertEqual(report["journal_mode"].lower(), "wal")
+
+    def test_empty_legacy_index_is_marked_but_not_used(self):
+        self.memory.close()
+        legacy = Path(self.temp.name) / ".neural-memory" / "index.sqlite"
+        sqlite3.connect(legacy).close()
+        self.memory = NeuralMemory(Path(self.temp.name))
+
+        report = self.memory.health_report()
+        self.assertEqual(
+            report["database"]["legacy_index"]["state"],
+            "empty_legacy_ignored",
+        )
+        self.assertTrue(self.memory.db_path.is_file())
+        self.assertTrue(legacy.is_file())
+        self.assertTrue(self.memory.legacy_index_marker_path.is_file())
+
+    def test_legacy_index_is_copied_to_the_canonical_database_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = NeuralMemory(root)
+            original.remember(
+                "A legacy index record must survive canonical migration.",
+                "test",
+                confirmed=True,
+            )
+            original.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            original.close()
+            legacy = root / ".neural-memory" / "index.sqlite"
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            (root / "memory.sqlite3").replace(legacy)
+            for suffix in ("-wal", "-shm"):
+                sidecar = root / f"memory.sqlite3{suffix}"
+                if sidecar.exists():
+                    sidecar.replace(root / f".neural-memory/index.sqlite{suffix}")
+
+            migrated = NeuralMemory(root)
+            try:
+                self.assertEqual(migrated.stats()["layers"][1], 1)
+                self.assertTrue((root / "memory.sqlite3").is_file())
+                self.assertTrue(legacy.is_file())
+                self.assertEqual(
+                    migrated.health_report()["database"]["legacy_index"]["state"],
+                    "migrated_copy_from_legacy",
+                )
+            finally:
+                migrated.close()
 
     def test_atomic_backup_verification_and_rotation(self):
         seed_demo(self.memory)
