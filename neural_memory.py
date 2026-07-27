@@ -35,7 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
-SOFTWARE_VERSION = "1.5.4"
+SOFTWARE_VERSION = "1.5.5"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
@@ -1623,25 +1623,19 @@ class NeuralMemory:
                WHERE layer=3 AND status NOT IN ('rejected','archived','stale')"""
         ).fetchall()
         for concept in concepts:
-            descendants = self.db.execute(
-                """WITH RECURSIVE downward(id,layer) AS (
-                       SELECT id,layer FROM neurons WHERE id=?
-                       UNION
-                       SELECT n.id,n.layer
-                FROM downward d
-                JOIN synapses s ON s.source_id=d.id
-                JOIN neurons n ON n.id=s.target_id
-                WHERE n.layer<d.layer
-                         AND n.status='confirmed'
-                   )
-                   SELECT
-                     count(DISTINCT CASE WHEN layer=1 THEN id END) AS atoms,
-                     count(DISTINCT CASE WHEN layer=2 THEN id END) AS episodes
-                   FROM downward""",
-                (concept["id"],),
-            ).fetchone()
-            support = int(descendants["atoms"] or 0)
-            episodes = int(descendants["episodes"] or 0)
+            atoms = self._related_atoms(str(concept["id"]))
+            atom_ids = [str(atom["id"]) for atom in atoms]
+            support = len(atom_ids)
+            episodes = 0
+            if atom_ids:
+                placeholders = ",".join("?" for _ in atom_ids)
+                episodes = int(self.db.execute(
+                    f"""SELECT count(DISTINCT s.target_id) FROM synapses s
+                        JOIN neurons n ON n.id=s.target_id
+                        WHERE s.source_id IN ({placeholders})
+                          AND s.relation='episode' AND n.layer=2""",
+                    tuple(atom_ids),
+                ).fetchone()[0] or 0)
             stability = (
                 0.05
                 if support == 0
@@ -2857,7 +2851,11 @@ class NeuralMemory:
                 next_ids.append(upper_id)
                 for lower_id in current_ids:
                     self._connect(lower_id, upper_id, relation, max(0.68, 0.94 - layer * 0.04))
-            current_ids = next_ids
+            # An episode is shared context, not a semantic membership hub.
+            # Keep L1 as the source for L3 so one record's topic cannot be
+            # inherited by every other record in the same L2 episode.
+            if layer != 2:
+                current_ids = next_ids
 
     def _flag_possible_conflicts(
         self, neuron_id: str, text: str, peers: Iterable[sqlite3.Row]
@@ -3445,10 +3443,10 @@ class NeuralMemory:
         route_ids = list(dict.fromkeys(route_ids))
         placeholders = ",".join("?" for _ in route_ids)
         rows = self.db.execute(
-            f"""SELECT s.source_id AS route_id, s.target_id AS memory_id
-                FROM synapses s JOIN neurons n ON n.id=s.target_id
-                WHERE s.source_id IN ({placeholders})
-                  AND s.relation='member_of' AND n.layer=1
+            f"""SELECT s.target_id AS route_id, s.source_id AS memory_id
+                FROM synapses s JOIN neurons n ON n.id=s.source_id
+                WHERE s.target_id IN ({placeholders})
+                  AND s.relation IN ('member_of','emergent_member_of') AND n.layer=1
                   AND n.status='confirmed'""",
             tuple(route_ids),
         ).fetchall()
@@ -4006,28 +4004,19 @@ class NeuralMemory:
         max_depth: int = 5,
         confirmed_only: bool = True,
     ) -> list[sqlite3.Row]:
-        """Return L1 support by following the lower-to-upper memory graph backwards."""
+        """Return direct L1 support for one L3 without widening through L2."""
         status_clause = "n.status='confirmed'" if confirmed_only else (
             "n.status NOT IN ('rejected','archived')"
         )
         return self.db.execute(
-            """WITH RECURSIVE descendants(id,layer,depth) AS (
-                   SELECT id,layer,0 FROM neurons WHERE id=?
-                   UNION
-                   SELECT n.id,n.layer,d.depth+1
-                   FROM descendants d
-                   JOIN synapses s ON s.target_id=d.id
-                   JOIN neurons n ON n.id=s.source_id
-                   WHERE n.layer<d.layer
-                     AND d.depth<?
-                     AND s.relation IN ('member_of','emergent_member_of','episode')
-               )
-               SELECT DISTINCT n.*,e.source FROM descendants d
-               JOIN neurons n ON n.id=d.id
+            """SELECT DISTINCT n.*,e.source FROM synapses s
+               JOIN neurons n ON n.id=s.source_id
                LEFT JOIN evidence e ON e.id=n.evidence_id
-               WHERE n.layer=1 AND """ + status_clause + """
+               WHERE s.target_id=?
+                 AND s.relation IN ('member_of','emergent_member_of')
+                 AND n.layer=1 AND """ + status_clause + """
                ORDER BY n.created_at""",
-            (neuron_id, max_depth),
+            (neuron_id,),
         ).fetchall()
 
     @staticmethod

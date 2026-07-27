@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.5 - 2026-07-27
+
+- Keep L2 episodes as shared context only; each L1 now connects directly to its
+  own L3 concepts, preventing one study session from merging all member topics.
+- Restrict L3 support, topic scoping, semantic stability, and generated
+  Obsidian pages to direct L1-to-L3 semantic links.
+- Add rebuild regression coverage for separate L3 membership inside one shared
+  episode.
+
 ## 1.5.4 - 2026-07-27
 
 - Automatically resolve obsolete `needs_review` maintenance issues when their

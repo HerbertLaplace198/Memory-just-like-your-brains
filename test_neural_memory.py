@@ -577,7 +577,7 @@ class NeuralMemoryTests(unittest.TestCase):
         release = (self.memory.obsidian_dir / "主题" / "Release.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Neural Memory：v1.5.4", current)
+        self.assertIn("Neural Memory：v1.5.5", current)
         self.assertIn("memory.sqlite3", current)
         self.assertIn("[[01 当前运行状态|查看当前版本、数据库和维护状态]]", home)
         self.assertIn("历史发布记录（不代表当前状态）", home)
@@ -795,7 +795,7 @@ class NeuralMemoryTests(unittest.TestCase):
             {memory_id},
         )
 
-    def test_topic_page_includes_episode_routed_l1_members_and_real_links(self):
+    def test_shared_episode_does_not_merge_l3_membership(self):
         investment = self.memory.remember(
             "The investment plan uses diversified allocation.",
             "test",
@@ -804,14 +804,64 @@ class NeuralMemoryTests(unittest.TestCase):
             episode="Investment review session",
         )
         thesis = self.memory.remember(
-            "Thesis progress has entered result verification.", "test", topics=["thesis"], confirmed=True
+            "Thesis progress has entered result verification.",
+            "test",
+            topics=["thesis"],
+            confirmed=True,
+            episode="Investment review session",
         )
         self.memory.compile_obsidian()
-        page = self.memory.obsidian_dir / "主题" / "Investment.md"
-        text = page.read_text(encoding="utf-8")
-        self.assertIn(f"[[vault/memories/{investment}|{investment}]]", text)
-        self.assertIn("[[vault/evidence/", text)
-        self.assertNotIn(thesis, text)
+        investment_page = self.memory.obsidian_dir / "主题" / "Investment.md"
+        thesis_page = self.memory.obsidian_dir / "主题" / "Thesis.md"
+        investment_text = investment_page.read_text(encoding="utf-8")
+        thesis_text = thesis_page.read_text(encoding="utf-8")
+        self.assertIn(f"[[vault/memories/{investment}|{investment}]]", investment_text)
+        self.assertIn("[[vault/evidence/", investment_text)
+        self.assertNotIn(thesis, investment_text)
+        self.assertIn(f"[[vault/memories/{thesis}|{thesis}]]", thesis_text)
+        self.assertNotIn(investment, thesis_text)
+
+        self.assertEqual(
+            {row["id"] for row in self.memory._related_atoms(
+                self.memory._find_named(3, "Investment")["id"],
+                confirmed_only=False,
+            )},
+            {investment},
+        )
+        self.assertEqual(
+            {row["id"] for row in self.memory._related_atoms(
+                self.memory._find_named(3, "Thesis")["id"],
+                confirmed_only=False,
+            )},
+            {thesis},
+        )
+
+    def test_rebuild_preserves_direct_l1_to_l3_membership(self):
+        first = self.memory.remember(
+            "One topic in a shared study session.",
+            "test",
+            topics=["Economics"],
+            confirmed=True,
+            episode="Shared study session",
+        )
+        second = self.memory.remember(
+            "Another topic in the same study session.",
+            "test",
+            topics=["Thesis"],
+            confirmed=True,
+            episode="Shared study session",
+        )
+        self.memory.rebuild_index()
+        economics = self.memory._find_named(3, "Economics")
+        thesis = self.memory._find_named(3, "Thesis")
+        self.assertEqual(
+            {row["id"] for row in self.memory._related_atoms(economics["id"])},
+            {first},
+        )
+        self.assertEqual(
+            {row["id"] for row in self.memory._related_atoms(thesis["id"])},
+            {second},
+        )
 
     def test_obsidian_hides_l6_and_removes_stale_generated_pages(self):
         self.memory.remember(
@@ -1101,7 +1151,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.4")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.5")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
