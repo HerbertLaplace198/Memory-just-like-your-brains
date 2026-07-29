@@ -35,7 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
-SOFTWARE_VERSION = "1.5.9"
+SOFTWARE_VERSION = "1.5.10"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
@@ -3870,8 +3870,10 @@ class NeuralMemory:
         query: str,
         limit: int = 5,
         reconsolidate: bool = False,
+        activated: list[ActivatedNeuron] | None = None,
     ) -> list[ActivatedNeuron]:
-        _, _, activated = self.probe(query)
+        if activated is None:
+            _, _, activated = self.probe(query)
         cards = [item for item in activated if item.layer == 1]
         topic_memory_ids = self._topic_memory_ids(activated, query)
         if topic_memory_ids:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.10 - 2026-07-29
+
+- Reuse the activation from `memory_awareness` for a same-query
+  `memory_recall` for 30 seconds, so the staged MCP protocol does not rescan
+  L1 summaries in SQLite before returning the cards.
+
 ## 1.5.9 - 2026-07-29
 
 - Replace generated L3 page narratives that repeated L1 summaries with a

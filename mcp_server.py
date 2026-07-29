@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,9 @@ PROTOCOL_VERSION = "2025-06-18"
 class MCPServer:
     def __init__(self, root: Path, encoder_config: Path | None = None):
         self.memory = NeuralMemory(root, resolve_encoder(root, encoder_config))
+        # A normal client calls awareness immediately before recall. Keep that
+        # activation briefly so the second stage does not rescan every L1 row.
+        self._probe_cache: dict[str, tuple[float, tuple[bool, float, list[Any]]]] = {}
         try:
             self.startup_consolidation = self.memory.consolidate_if_due()
             if self.startup_consolidation["performed"]:
@@ -37,6 +41,18 @@ class MCPServer:
 
     def close(self) -> None:
         self.memory.close()
+
+    def _probe(self, query: str) -> tuple[bool, float, list[Any]]:
+        cached = self._probe_cache.get(query)
+        current = time.monotonic()
+        if cached and cached[0] > current:
+            return cached[1]
+        result = self.memory.probe(query)
+        self._probe_cache = {query: (current + 30.0, result)}
+        return result
+
+    def _clear_probe_cache(self) -> None:
+        self._probe_cache.clear()
 
     @staticmethod
     def tools() -> list[dict[str, Any]]:
@@ -135,7 +151,7 @@ class MCPServer:
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "memory_awareness":
             query = self._required_text(arguments, "query")
-            known, peak, activated = self.memory.probe(query)
+            known, peak, activated = self._probe(query)
             family_routing = self.memory.concept_family_routes(query)
             return {
                 "known": known,
@@ -161,7 +177,7 @@ class MCPServer:
             limit = max(1, min(5, int(arguments.get("limit", 3))))
             detail = bool(arguments.get("detail", False))
             learn = bool(arguments.get("learn", False))
-            known, peak, _ = self.memory.probe(query)
+            known, peak, activated = self._probe(query)
             if not known:
                 return {
                     "known": False,
@@ -169,7 +185,9 @@ class MCPServer:
                     "cards": [],
                     "reason": "recall gate closed",
                 }
-            cards = self.memory.recall(query, limit, reconsolidate=learn)
+            cards = self.memory.recall(
+                query, limit, reconsolidate=learn, activated=activated
+            )
             result_cards: list[dict[str, Any]] = []
             for card in cards:
                 result: dict[str, Any] = {
@@ -232,6 +250,7 @@ class MCPServer:
                 domain=arguments.get("domain"),
                 expires_at=arguments.get("expires"),
             )
+            self._clear_probe_cache()
             view = self.memory.compile_obsidian()
             return {
                 "id": neuron_id,
