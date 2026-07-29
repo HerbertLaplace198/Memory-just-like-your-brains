@@ -35,7 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
-SOFTWARE_VERSION = "1.5.6"
+SOFTWARE_VERSION = "1.5.7"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"

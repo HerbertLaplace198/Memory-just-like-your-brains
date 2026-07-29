@@ -72,6 +72,17 @@ class MultiTopicEncoder:
         return [self.encode(text) for text in texts]
 
 
+class CountingEncoder(TinyEncoder):
+    """Track embedding work while preserving deterministic test vectors."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def encode(self, text):
+        self.calls += 1
+        return super().encode(text)
+
+
 class NeuralMemoryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -577,7 +588,7 @@ class NeuralMemoryTests(unittest.TestCase):
         release = (self.memory.obsidian_dir / "主题" / "Release.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Neural Memory：v1.5.6", current)
+        self.assertIn("Neural Memory：v1.5.7", current)
         self.assertIn("memory.sqlite3", current)
         self.assertIn("[[01 当前运行状态|查看当前版本、数据库和维护状态]]", home)
         self.assertIn("历史发布记录（不代表当前状态）", home)
@@ -734,6 +745,27 @@ class NeuralMemoryTests(unittest.TestCase):
                         "SELECT id FROM neurons WHERE layer=3 AND label='Study Method'"
                     ).fetchone()
                 )
+            finally:
+                memory.close()
+
+    def test_proposed_write_reuses_its_single_text_embedding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            encoder = CountingEncoder()
+            memory = NeuralMemory(Path(temporary), encoder)
+            try:
+                memory.remember(
+                    "Confirmed evidence establishes the memory system topic.",
+                    "test",
+                    topics=["Memory System"],
+                    confirmed=True,
+                )
+                encoder.calls = 0
+                memory.remember(
+                    "A proposed write must reuse its text embedding.",
+                    "test",
+                    topics=["Memory System"],
+                )
+                self.assertEqual(encoder.calls, 1)
             finally:
                 memory.close()
 
@@ -1151,7 +1183,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.6")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.7")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
@@ -1195,6 +1227,37 @@ class NeuralMemoryTests(unittest.TestCase):
             self.assertEqual(proposed_recall["cards"], [])
             topic_page = server.memory.obsidian_dir / "主题" / "Memory Governance.md"
             self.assertIn(proposed["id"], topic_page.read_text(encoding="utf-8"))
+        finally:
+            server.close()
+
+    def test_mcp_write_failure_returns_error_without_closing_transport(self):
+        server = MCPServer(Path(self.temp.name) / "mcp-error")
+        try:
+            request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "memory_propose",
+                    "arguments": {"text": "A failing write must keep MCP alive."},
+                },
+            }
+            with patch.object(
+                server.memory,
+                "remember",
+                side_effect=sqlite3.OperationalError("simulated write failure"),
+            ):
+                failed = server.handle(request)
+            self.assertTrue(failed["result"]["isError"])
+            self.assertIn("simulated write failure", failed["result"]["content"][0]["text"])
+
+            follow_up = server.handle({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {},
+            })
+            self.assertIn("tools", follow_up["result"])
         finally:
             server.close()
 

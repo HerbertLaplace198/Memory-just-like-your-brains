@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.7 - 2026-07-29
+
+- Reuse a memory's embedding during write-time topic routing and L1 indexing,
+  eliminating repeated local embedding requests that could make MCP proposals
+  time out.
+- Keep the MCP stdio session alive when an unexpected write, database, or
+  encoder error occurs; callers receive a structured tool error instead.
+
 ## 1.5.6 - 2026-07-27
 
 - Add elected primary L3F membership: each topic has at most one family that

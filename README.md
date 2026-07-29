@@ -1,4 +1,4 @@
-# Neural Memory 1.5.6
+# Neural Memory 1.5.7
 
 Neural Memory is an auditable, layered, local-first memory system. Canonical memory content is stored in Markdown, while SQLite provides a rebuildable neural retrieval index. It is independent of mdkb, has a zero-dependency hash encoder, and can optionally use a local neural embedding service.
 

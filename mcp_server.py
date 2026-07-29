@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from neural_memory import NeuralMemory, compact, resolve_encoder
+from neural_memory import NeuralMemory, SOFTWARE_VERSION, compact, resolve_encoder
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -263,7 +263,7 @@ class MCPServer:
             return self._result(request_id, {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "neural-memory", "version": "1.5.6"},
+                "serverInfo": {"name": "neural-memory", "version": SOFTWARE_VERSION},
             })
         if method == "notifications/initialized":
             return None
