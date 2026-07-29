@@ -1189,6 +1189,7 @@ class NeuralMemory:
         self,
         query: str,
         concepts: list[sqlite3.Row],
+        query_vector: list[float] | None = None,
     ) -> list[tuple[float, sqlite3.Row]]:
         """Rank active L3 topics against one memory or topic hint.
 
@@ -1197,7 +1198,9 @@ class NeuralMemory:
         """
         if not query.strip() or not concepts:
             return []
-        query_vector = self._encode(query)
+        # A write already encodes its memory text for the L1 record.  Reuse that
+        # representation here instead of issuing another local embedding request.
+        query_vector = query_vector if query_vector is not None else self._encode(query)
         query_terms = self._topic_terms(query)
         scored: list[tuple[float, sqlite3.Row]] = []
         for concept in concepts:
@@ -1233,6 +1236,7 @@ class NeuralMemory:
         self,
         text: str,
         requested_topics: Iterable[str] = (),
+        text_vector: list[float] | None = None,
     ) -> list[str]:
         """Reuse relevant L3 topics before accepting new topic labels.
 
@@ -1267,13 +1271,16 @@ class NeuralMemory:
                 exact = None
             if exact:
                 matched[str(exact["id"])] = exact
-            hint_matches = self._rank_topic_matches(label, concepts)
+            # An exact canonical topic is already a valid route.  The text match
+            # below still discovers any additional related topics, so avoid an
+            # otherwise redundant embedding request for the label itself.
+            hint_matches = [] if exact else self._rank_topic_matches(label, concepts)
             for _, concept in hint_matches:
                 matched[str(concept["id"])] = concept
             if not exact and not hint_matches:
                 unmatched_requested.append(label)
 
-        for _, concept in self._rank_topic_matches(text, concepts):
+        for _, concept in self._rank_topic_matches(text, concepts, text_vector):
             matched[str(concept["id"])] = concept
 
         existing_labels = list(
@@ -1300,9 +1307,14 @@ class NeuralMemory:
         expires_at: str | None = None,
         stability: float = 0.5,
         created_at: str | None = None,
+        representation: list[float] | None = None,
     ) -> str:
         neuron_id = neuron_id or short_id(f"l{layer}")
-        representation = self._encode(label + " " + summary)
+        representation = (
+            representation
+            if representation is not None
+            else self._encode(label + " " + summary)
+        )
         self.db.execute(
             """INSERT INTO neurons
                (id, layer, label, summary, vector, status, confidence, importance,
@@ -2949,7 +2961,13 @@ class NeuralMemory:
             token in source.casefold() for token in ("skill", "tool")
         ):
             requested_topics = ["Tools"]
-        concept_labels = self._resolve_memory_topics(text, requested_topics)
+        # Encode once, before creating canonical files, and reuse the vector for
+        # topic routing and the L1 record.  Slow local models previously made a
+        # single proposal perform several sequential requests and time out.
+        text_vector = self._encode(text)
+        concept_labels = self._resolve_memory_topics(
+            text, requested_topics, text_vector
+        )
         procedure_labels = require_english_labels(procedures, "procedures")
         persona_labels = require_english_labels(schemas, "schemas")
         episode_labels = require_english_labels(
@@ -2991,7 +3009,9 @@ class NeuralMemory:
             "conflicts": list(dict.fromkeys(x.strip() for x in conflicts if x.strip())),
         }
         write_record(self.memory_dir / f"{neuron_id}.md", record, text)
-        self._index_canonical_record(record, text)
+        self._index_canonical_record(
+            record, text, memory_vector=text_vector, resolve_topics=False
+        )
         if confirmed:
             self._consolidate_derived_state()
         else:
@@ -2999,7 +3019,13 @@ class NeuralMemory:
         self.db.commit()
         return neuron_id
 
-    def _index_canonical_record(self, record: dict[str, object], text: str) -> None:
+    def _index_canonical_record(
+        self,
+        record: dict[str, object],
+        text: str,
+        memory_vector: list[float] | None = None,
+        resolve_topics: bool = True,
+    ) -> None:
         if record.get("format") != MEMORY_FORMAT:
             raise ValueError(f"unsupported memory record: {record.get('format')}")
         neuron_id = str(record["id"])
@@ -3027,6 +3053,7 @@ class NeuralMemory:
             str(record.get("expires_at", "")) or None,
             0.68 if status == "confirmed" else 0.36,
             created_at,
+            memory_vector,
         )
 
         for target_id in record.get("supersedes", []):
@@ -3047,7 +3074,7 @@ class NeuralMemory:
         if status in {"rejected", "archived"}:
             return
 
-        new_vector = self._encode(text)
+        new_vector = memory_vector if memory_vector is not None else self._encode(text)
         peers = self.db.execute(
             "SELECT * FROM neurons WHERE layer=1 AND id!=? AND status!='rejected'",
             (neuron_id,),
@@ -3070,7 +3097,11 @@ class NeuralMemory:
             token in source.casefold() for token in ("skill", "tool")
         ):
             requested_topics = ["Tools"]
-        concept_labels = self._resolve_memory_topics(text, requested_topics)
+        concept_labels = (
+            self._resolve_memory_topics(text, requested_topics, new_vector)
+            if resolve_topics
+            else requested_topics
+        )
         level_specs: list[tuple[int, list[str], str, str]] = [
             (2, [str(record.get("episode", ""))], "episode", "情景记忆"),
             (3, concept_labels, "member_of", "语义概念"),

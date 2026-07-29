@@ -280,7 +280,18 @@ class MCPServer:
                     "structuredContent": payload,
                     "isError": False,
                 })
-            except (TypeError, ValueError, OSError) as exc:
+            except Exception as exc:
+                # A write error must remain a tool-level failure.  Letting a
+                # database or encoder exception escape closes the stdio stream,
+                # which clients report only as a disconnected memory service.
+                try:
+                    self.memory.db.rollback()
+                except Exception:
+                    pass
+                print(
+                    f"tool {params.get('name', '')} failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
                 return self._result(request_id, {
                     "content": [{"type": "text", "text": str(exc)}],
                     "isError": True,
