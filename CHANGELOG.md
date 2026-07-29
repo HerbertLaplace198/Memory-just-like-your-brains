@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.8 - 2026-07-29
+
+- Treat punctuation and whitespace variants of an L3 label as the same named
+  concept, preventing deterministic concept-ID collisions during indexing.
+- Make memory writes rollback-safe: canonical evidence and record files are
+  published only after indexing succeeds, and failed indexing leaves no new
+  orphan files.
+- Recover a matching, previously stranded canonical proposed record on retry
+  instead of creating another duplicate candidate.
+
 ## 1.5.7 - 2026-07-29
 
 - Reuse a memory's embedding during write-time topic routing and L1 indexing,

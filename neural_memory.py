@@ -35,7 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
-SOFTWARE_VERSION = "1.5.7"
+SOFTWARE_VERSION = "1.5.8"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
@@ -171,7 +171,9 @@ def elapsed_days(value: str | None, reference: datetime | None = None) -> float:
 
 
 def short_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:10]}"
+    # Random IDs are persisted in canonical Markdown as well as SQLite.  Keep
+    # enough entropy that independently started MCP workers cannot collide.
+    return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
 def features(text: str) -> list[str]:
@@ -1153,6 +1155,16 @@ class NeuralMemory:
     def _find_named(self, layer: int, label: str) -> sqlite3.Row | None:
         if layer == 3:
             label = self._resolve_concept_alias(label)
+            normalized = normalized_concept_key(label)
+            # Stable L3 IDs already use this normalized key.  Reuse a concept
+            # whose display label differs only by case, spaces, or punctuation
+            # (for example ``asset-allocation`` and ``Asset Allocation``),
+            # rather than attempting to insert the same deterministic ID.
+            for row in self.db.execute(
+                "SELECT * FROM neurons WHERE layer=3 AND status!='rejected'"
+            ):
+                if normalized_concept_key(str(row["label"])) == normalized:
+                    return row
         return self.db.execute(
             "SELECT * FROM neurons WHERE layer=? AND lower(label)=lower(?) AND status!='rejected'",
             (layer, label),
@@ -2938,6 +2950,57 @@ class NeuralMemory:
         self.db.commit()
         return True
 
+    def _matching_canonical_memory(
+        self,
+        text: str,
+        source: str,
+        status: str,
+        importance: float,
+        concepts: list[str],
+        procedures: list[str],
+        personas: list[str],
+        episode: str,
+        domain: str,
+        expires_at: str,
+        supersedes: list[str],
+        conflicts: list[str],
+    ) -> tuple[dict[str, object], str] | None:
+        """Return an existing canonical record for an idempotent retry."""
+        expected = {
+            "source": source,
+            "status": status,
+            "importance": importance,
+            "concepts": concepts,
+            "procedures": procedures,
+            "personas": personas,
+            "episode": episode,
+            "domain": domain,
+            "expires_at": expires_at,
+            "supersedes": supersedes,
+            "conflicts": conflicts,
+        }
+        matches: list[tuple[dict[str, object], str]] = []
+        for path in self.memory_dir.glob("l1_*.md"):
+            try:
+                metadata, body = read_record(path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if metadata.get("format") != MEMORY_FORMAT or body.strip() != text.strip():
+                continue
+            if all(
+                (
+                    [normalized_concept_key(str(item)) for item in metadata.get(key, [])]
+                    == [normalized_concept_key(item) for item in value]
+                )
+                if key == "concepts"
+                else metadata.get(key) == value
+                for key, value in expected.items()
+            ):
+                matches.append((metadata, body))
+        if not matches:
+            return None
+        return min(matches, key=lambda item: (str(item[0].get("created_at", "")), str(item[0].get("id", ""))))
+
     @serialized_write
     def remember(
         self,
@@ -2976,11 +3039,52 @@ class NeuralMemory:
         domain_labels = require_english_labels(
             [domain] if domain else [], "domain"
         )
+        status = "confirmed" if confirmed else "proposed"
+        episode_label = episode_labels[0] if episode_labels else ""
+        domain_label = domain_labels[0] if domain_labels else ""
+        expiry = (expires_at or "").strip()
+        superseding = list(dict.fromkeys(x.strip() for x in supersedes if x.strip()))
+        conflicting = list(dict.fromkeys(x.strip() for x in conflicts if x.strip()))
+        existing = self._matching_canonical_memory(
+            text,
+            source,
+            status,
+            importance,
+            concept_labels,
+            procedure_labels,
+            persona_labels,
+            episode_label,
+            domain_label,
+            expiry,
+            superseding,
+            conflicting,
+        )
+        if existing:
+            record, existing_text = existing
+            neuron_id = str(record["id"])
+            indexed = self.db.execute(
+                "SELECT 1 FROM neurons WHERE id=?", (neuron_id,)
+            ).fetchone()
+            if not indexed:
+                self._index_canonical_record(
+                    record, existing_text, memory_vector=text_vector, resolve_topics=False
+                )
+                if confirmed:
+                    self._consolidate_derived_state()
+                else:
+                    self._refresh_semantic_stability()
+                self.db.commit()
+            return neuron_id
         evidence_id = short_id("ev")
         neuron_id = short_id("l1")
         created_at = now()
         evidence_path = self.evidence_dir / f"{evidence_id}.md"
-        evidence_path.write_text(
+        record_path = self.memory_dir / f"{neuron_id}.md"
+        if evidence_path.exists() or record_path.exists():
+            raise RuntimeError("generated memory ID already exists; retry the write")
+        evidence_temp = evidence_path.with_name(f".{evidence_path.name}.{short_id('tmp')}")
+        record_temp = record_path.with_name(f".{record_path.name}.{short_id('tmp')}")
+        evidence_temp.write_text(
             "---\n"
             f"id: {evidence_id}\n"
             f"source: {json.dumps(source, ensure_ascii=False)}\n"
@@ -2995,28 +3099,42 @@ class NeuralMemory:
             "evidence_id": evidence_id,
             "evidence_path": str(evidence_path.relative_to(self.root)),
             "source": source,
-            "status": "confirmed" if confirmed else "proposed",
+            "status": status,
             "confidence": 0.95 if confirmed else 0.68,
             "importance": importance,
             "created_at": created_at,
-            "episode": episode_labels[0] if episode_labels else "",
+            "episode": episode_label,
             "concepts": concept_labels,
             "procedures": procedure_labels,
             "personas": persona_labels,
-            "domain": domain_labels[0] if domain_labels else "",
-            "expires_at": (expires_at or "").strip(),
-            "supersedes": list(dict.fromkeys(x.strip() for x in supersedes if x.strip())),
-            "conflicts": list(dict.fromkeys(x.strip() for x in conflicts if x.strip())),
+            "domain": domain_label,
+            "expires_at": expiry,
+            "supersedes": superseding,
+            "conflicts": conflicting,
         }
-        write_record(self.memory_dir / f"{neuron_id}.md", record, text)
-        self._index_canonical_record(
-            record, text, memory_vector=text_vector, resolve_topics=False
-        )
-        if confirmed:
-            self._consolidate_derived_state()
-        else:
-            self._refresh_semantic_stability()
-        self.db.commit()
+        write_record(record_temp, record, text)
+        published: list[Path] = []
+        try:
+            self._index_canonical_record(
+                record, text, memory_vector=text_vector, resolve_topics=False
+            )
+            if confirmed:
+                self._consolidate_derived_state()
+            else:
+                self._refresh_semantic_stability()
+            os.replace(evidence_temp, evidence_path)
+            published.append(evidence_path)
+            os.replace(record_temp, record_path)
+            published.append(record_path)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            for path in (evidence_temp, record_temp, *published):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
         return neuron_id
 
     def _index_canonical_record(

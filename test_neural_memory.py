@@ -113,6 +113,58 @@ class NeuralMemoryTests(unittest.TestCase):
         self.assertTrue(self.memory.review(neuron_id, "confirmed"))
         self.assertNotIn(neuron_id, {row["id"] for row in self.memory.proposed()})
 
+    def test_normalized_l3_label_reuses_existing_stable_id(self):
+        self.memory.remember(
+            "Confirmed allocation evidence.",
+            "test",
+            topics=["Asset Allocation"],
+            confirmed=True,
+        )
+        proposal = self.memory.remember(
+            "A proposal may spell the same topic with hyphens.",
+            "test",
+            topics=["asset-allocation"],
+        )
+        labels = {
+            row["label"]
+            for row in self.memory.db.execute(
+                """SELECT n.label FROM synapses s JOIN neurons n ON n.id=s.target_id
+                   WHERE s.source_id=? AND s.relation='member_of' AND n.layer=3""",
+                (proposal,),
+            )
+        }
+        self.assertEqual(labels, {"Asset Allocation"})
+
+    def test_failed_index_does_not_publish_canonical_files(self):
+        before_memories = set(self.memory.memory_dir.glob("*.md"))
+        before_evidence = set(self.memory.evidence_dir.glob("*.md"))
+        with patch.object(
+            self.memory,
+            "_index_canonical_record",
+            side_effect=sqlite3.IntegrityError("simulated index failure"),
+        ):
+            with self.assertRaises(sqlite3.IntegrityError):
+                self.memory.remember("An interrupted write must leave no orphan.", "test")
+        self.assertEqual(set(self.memory.memory_dir.glob("*.md")), before_memories)
+        self.assertEqual(set(self.memory.evidence_dir.glob("*.md")), before_evidence)
+
+    def test_identical_retry_recovers_existing_canonical_record(self):
+        text = "A retry should reuse its prior canonical proposed record."
+        neuron_id = self.memory.remember(text, "test", topics=["Asset Allocation"])
+        evidence_id = self.memory.db.execute(
+            "SELECT evidence_id FROM neurons WHERE id=?", (neuron_id,)
+        ).fetchone()[0]
+        self.memory.db.execute("DELETE FROM neurons WHERE id=?", (neuron_id,))
+        self.memory.db.execute("DELETE FROM evidence WHERE id=?", (evidence_id,))
+        self.memory.db.commit()
+
+        recovered_id = self.memory.remember(text, "test", topics=["asset-allocation"])
+        self.assertEqual(recovered_id, neuron_id)
+        self.assertIsNotNone(
+            self.memory.db.execute("SELECT id FROM neurons WHERE id=?", (neuron_id,)).fetchone()
+        )
+        self.assertEqual(len(list(self.memory.memory_dir.glob("*.md"))), 1)
+
     def test_maintenance_closes_review_issue_after_candidate_is_confirmed(self):
         neuron_id = self.memory.remember(
             "This candidate should stop creating review noise once confirmed.",
@@ -588,7 +640,7 @@ class NeuralMemoryTests(unittest.TestCase):
         release = (self.memory.obsidian_dir / "主题" / "Release.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Neural Memory：v1.5.7", current)
+        self.assertIn("Neural Memory：v1.5.8", current)
         self.assertIn("memory.sqlite3", current)
         self.assertIn("[[01 当前运行状态|查看当前版本、数据库和维护状态]]", home)
         self.assertIn("历史发布记录（不代表当前状态）", home)
@@ -1183,7 +1235,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.7")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.8")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
