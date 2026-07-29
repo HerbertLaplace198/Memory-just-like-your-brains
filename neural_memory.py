@@ -35,7 +35,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 VECTOR_DIMS = 1024
-SOFTWARE_VERSION = "1.5.8"
+SOFTWARE_VERSION = "1.5.9"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
 MEMORY_FORMAT = "neural-memory-record/v2"
 SEMANTIC_REVIEW_FORMAT = "neural-memory-semantic-review/v1"
@@ -4440,21 +4440,25 @@ class NeuralMemory:
         return match.group(1) if match else "\n在这里添加人工批注。\n"
 
     @staticmethod
-    def _narrative(rows: list[sqlite3.Row]) -> str:
-        statements = [row["summary"].strip().rstrip("。") for row in rows if row["summary"].strip()]
-        if not statements:
-            return "当前没有足够的已确认记忆形成连续说明。"
-        connectors = ["目前，", "此外，", "在后续记录中，", "同时，", "综合来看，"]
-        paragraphs: list[str] = []
-        for index in range(0, len(statements), 3):
-            group = statements[index : index + 3]
-            sentence = "".join(
-                (connectors[(index + offset) % len(connectors)] if offset == 0 else "；")
-                + statement
-                for offset, statement in enumerate(group)
-            )
-            paragraphs.append(sentence + "。")
-        return "\n\n".join(paragraphs)
+    def _narrative(label: str, rows: list[sqlite3.Row]) -> str:
+        """Render a concept-level L3 digest without repeating L1 evidence."""
+        if not rows:
+            return "当前没有足够的已确认记忆形成概念摘要。"
+        sources = list(dict.fromkeys(str(row["source"] or "unknown") for row in rows))
+        source_text = "、".join(f"`{compact(source, 48)}`" for source in sources[:3])
+        source_suffix = " 等来源" if len(sources) > 3 else ""
+        if len(rows) == 1:
+            support = "1"
+            maturity = "仍处于单一证据阶段"
+        else:
+            support = str(len(rows))
+            maturity = "已形成跨记录的概念范围"
+        return (
+            f"“{label}”目前由 {support} 条记忆支持，{maturity}；"
+            f"证据来自 {source_text}{source_suffix}。\n\n"
+            "本段只保留概念范围，不复述原始记忆中的数字、判断或时间条件；"
+            "请通过下方 Linked Memories 按需查看可追溯证据。"
+        )
 
     @serialized_write
     def sync_obsidian_notes(self) -> dict[str, int]:
@@ -4791,7 +4795,7 @@ class NeuralMemory:
                 "<!-- GENERATED:START -->\n"
                 "## 当前理解\n\n"
                 f"{historical_notice}"
-                f"{self._narrative(atoms)}\n\n"
+                f"{self._narrative(str(concept['label']), atoms)}\n\n"
                 "## Linked Memories\n\n"
                 f"{memory_lines}\n\n"
                 "## 上层关系\n\n"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.9 - 2026-07-29
+
+- Replace generated L3 page narratives that repeated L1 summaries with a
+  concept-level support digest. L1 facts remain available only as linked,
+  traceable evidence.
+
 ## 1.5.8 - 2026-07-29
 
 - Treat punctuation and whitespace variants of an L3 label as the same named

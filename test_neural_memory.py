@@ -640,11 +640,26 @@ class NeuralMemoryTests(unittest.TestCase):
         release = (self.memory.obsidian_dir / "主题" / "Release.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Neural Memory：v1.5.8", current)
+        self.assertIn("Neural Memory：v1.5.9", current)
         self.assertIn("memory.sqlite3", current)
         self.assertIn("[[01 当前运行状态|查看当前版本、数据库和维护状态]]", home)
         self.assertIn("历史发布记录（不代表当前状态）", home)
         self.assertIn("当前运行事实请查看 [[01 当前运行状态]]", release)
+
+    def test_l3_digest_does_not_repeat_l1_summary(self):
+        text = "The exact L1 detail must remain evidence rather than become an L3 digest."
+        neuron_id = self.memory.remember(
+            text, "test", topics=["Digest Boundary"], confirmed=True
+        )
+        self.memory.compile_obsidian()
+        page = (self.memory.obsidian_dir / "主题" / "Digest Boundary.md").read_text(
+            encoding="utf-8"
+        )
+        digest = page.split("## Linked Memories", 1)[0]
+        self.assertIn("“Digest Boundary”目前由 1 条记忆支持", digest)
+        self.assertIn("不复述原始记忆", digest)
+        self.assertNotIn(text, digest)
+        self.assertIn(f"[[vault/memories/{neuron_id}|{neuron_id}]]", page)
 
     def test_obsidian_compiler_generates_upper_layer_notes(self):
         self.memory.remember(
@@ -1235,7 +1250,7 @@ class NeuralMemoryTests(unittest.TestCase):
                 "params": {"protocolVersion": "2025-06-18"},
             })
             self.assertEqual(initialized["result"]["serverInfo"]["name"], "neural-memory")
-            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.8")
+            self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.5.9")
             awareness = server.call_tool(
                 "memory_awareness", {"query": "Why does the memory system use several layers?"}
             )
